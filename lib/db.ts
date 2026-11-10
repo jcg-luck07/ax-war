@@ -12,6 +12,7 @@
 //
 // 클라이언트 컴포넌트에서 import 금지 — 서버(Server Component / Route Handler / Server Action)에서만.
 import postgres from 'postgres'
+import { applyCoreSchema } from '@/lib/engine/schema'
 
 const RUNTIME_URL = process.env.DATABASE_URL ?? ''
 const DIRECT_URL = process.env.DIRECT_DATABASE_URL || RUNTIME_URL
@@ -70,6 +71,8 @@ export function ensureSchema(): Promise<void> {
         )
       `
       await migrate`CREATE INDEX IF NOT EXISTS todos_user_key_idx ON todos (user_key)`
+      // 범용 의사결정 엔진 공통 테이블 (안건·이력·승인·작업·가정·원본 행) — lib/engine/schema.ts
+      await applyCoreSchema(migrate)
     } finally {
       await migrate.end()
     }
