@@ -18,6 +18,8 @@ export interface Role {
   id: string
   label: string
   rank: number
+  /** 작업의 담당(assignee)으로 쓰이는 이름들 — 이 역할을 가진 사람이 그 작업을 처리할 수 있다 */
+  aliases?: string[]
 }
 
 export interface Rule {

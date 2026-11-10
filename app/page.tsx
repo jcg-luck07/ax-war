@@ -21,8 +21,8 @@ export default async function Home() {
           title="의사결정 도우미"
           description={`기준일 ${AS_OF} · 부서마다 다른 숫자를 하나의 기준으로 모아, 권한에 맞는 사람에게 올리고 결정 뒤의 일까지 이어 줍니다.`}
           actions={
-            <Link className={buttonVariants({ variant: 'outline' })} href="/demo">
-              시연 도구
+            <Link className={buttonVariants({ variant: 'outline' })} href="/inbox">
+              내 할 일
             </Link>
           }
         />
@@ -31,11 +31,11 @@ export default async function Home() {
           <Card>
             <Card.Header>
               <Card.Title>아직 안건이 없어요</Card.Title>
-              <Card.Description>시연 도구에서 혜인 전속계약과 캠페인 확대 기안을 불러오면 판단이 시작돼요.</Card.Description>
+              <Card.Description>안건 접수에서 캠페인 확대 기안을 접수하거나 전속계약 갱신 통보를 입력하면 판단이 시작돼요.</Card.Description>
             </Card.Header>
             <Card.Content>
-              <Link className={buttonVariants()} href="/demo">
-                안건 불러오러 가기
+              <Link className={buttonVariants()} href="/intake">
+                안건 접수하러 가기
               </Link>
             </Card.Content>
           </Card>

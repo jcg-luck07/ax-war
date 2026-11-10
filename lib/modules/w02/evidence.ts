@@ -5,7 +5,7 @@ import type { BriefInput } from '@/lib/app/brief'
 import { fmtPct, fmtRoas, fmtWon } from '@/lib/app/format'
 import type { PerformanceResult } from '@/lib/metrics/performance'
 import type { CashResult } from '@/lib/modules/cash/simulate'
-import { CONTRACT_NOTICE, CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
+import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import type { AuthorityDecision } from '@/lib/rules/types'
 
 const fmtDateStr = (s: string) => s // 날짜는 YYYY-MM-DD 그대로 보여 준다
@@ -53,12 +53,14 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
 
   // ── 안건 유형별 근거·대안 ──
   if (c.caseType === CONTRACT_CASE_TYPE) {
-    evidence.push({ label: '연 고정 피', value: fmtWon(CONTRACT_NOTICE.annualFixedFeeKrw), note: '성과와 무관하게 발생 · 계약 통보서 기준' })
-    evidence.push({ label: '통보 기한', value: CONTRACT_NOTICE.notifyDeadline, note: '넘기면 동일 조건 1년 자동 갱신(체결로 간주)' })
-    alternatives.push(`기한(${CONTRACT_NOTICE.notifyDeadline}) 전에 조건 변경(고정 피 인하 등)을 통보한다`)
-    alternatives.push(`기한(${CONTRACT_NOTICE.notifyDeadline}) 전에 해지를 통보한다 (갱신 후 해지는 잔여 고정 피의 50% 위약금)`)
+    const fee = Number(facts.annual_contract_value_krw ?? 0)
+    const dl = c.deadline ?? '기한 미입력'
+    evidence.push({ label: '연 고정 피', value: fmtWon(fee), note: '성과와 무관하게 발생' })
+    evidence.push({ label: '통보 기한', value: dl, note: '넘기면 동일 조건 1년 자동 갱신(체결로 간주)' })
+    alternatives.push(`기한(${dl}) 전에 조건 변경(고정 피 인하 등)을 통보한다`)
+    alternatives.push(`기한(${dl}) 전에 해지를 통보한다 (갱신 후 해지는 잔여 고정 피 일부를 위약금으로 내는 조건일 수 있음)`)
     alternatives.push('조건 그대로 갱신을 승인한다')
-    caveats.push('성과 피(GMV 연동) 정산 조건과 고정 피 지급 일정은 문서에 없어 확인되지 않았다.')
+    caveats.push('성과 피(GMV 연동) 정산 조건과 고정 피 지급 일정은 계약 원문이 없으면 확인되지 않는다.')
   } else if (c.caseType === EXPANSION_CASE_TYPE) {
     const amount = Number(payload.plan?.requested_budget_krw ?? facts.per_plan_amount_krw ?? 0)
     evidence.push({ label: '요청액', value: fmtWon(amount) })

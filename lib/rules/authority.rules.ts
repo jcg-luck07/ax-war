@@ -14,11 +14,15 @@
 import type { Role, Rule } from './types'
 
 export const ROLES: readonly Role[] = [
-  { id: 'marketing_team', label: '마케팅팀', rank: 1 },
-  { id: 'scm', label: 'SCM', rank: 2 },
-  { id: 'masil_ceo', label: 'Masil 대표', rank: 2 },
-  { id: 'ceo_board', label: 'CEO/이사회', rank: 3 },
-  { id: 'group_ceo', label: '그룹 CEO', rank: 3 },
+  // rank 0: 승인권한은 없지만 맡은 부서의 확인 요청·작업을 처리하는 역할
+  { id: 'finance', label: '재무', rank: 0, aliases: ['재무'] },
+  { id: 'contract_mgr', label: '계약 담당', rank: 0, aliases: ['계약 담당'] },
+  // rank 1 이상: 승인권한이 있는 역할 (높을수록 큰 권한)
+  { id: 'marketing_team', label: '마케팅팀', rank: 1, aliases: ['마케팅', '마케팅팀'] },
+  { id: 'scm', label: 'SCM', rank: 2, aliases: ['SCM'] },
+  { id: 'masil_ceo', label: 'Masil 대표', rank: 2, aliases: ['Masil 대표'] },
+  { id: 'ceo_board', label: 'CEO/이사회', rank: 3, aliases: ['CEO/이사회'] },
+  { id: 'group_ceo', label: '그룹 CEO', rank: 3, aliases: ['그룹 CEO'] },
 ]
 
 const POLICY = '00_common/approval_authority_policy.md'

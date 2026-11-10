@@ -5,6 +5,10 @@ import { AppShell } from '@/components/AppShell'
 import { PageHeader } from '@/components/ax'
 import { OriginPill, Pill, StatusPill } from '@/components/bits'
 import { DecisionPanel, FactChangeForm, InfoReplyForm, ResubmitButton, TaskDoneButton } from '@/components/case-actions'
+import { FlowDiagram, FlowStrip } from '@/components/FlowDiagram'
+import { canHandle, canWork, currentUser, decidingRole, roleLabels } from '@/lib/app/auth'
+import { flowForCaseType } from '@/lib/process/definitions'
+import { deriveFlowState } from '@/lib/process/state'
 import { makeBrief } from '@/lib/app/brief'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import {
@@ -12,7 +16,6 @@ import {
 } from '@/lib/app/format'
 import { tryPerformance } from '@/lib/app/queries'
 import { EngineError, daysUntil, getCaseView, type EventRow, type CaseView } from '@/lib/engine/engine'
-import { ROLES } from '@/lib/rules/authority.rules'
 import { buildBriefInput } from '@/lib/modules/w02/evidence'
 import { w02Notes, type W02Ctx } from '@/lib/modules/w02/handlers'
 import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
@@ -97,7 +100,17 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
   const days = daysUntil(c.deadline, AS_OF)
   const isFinal = ['approved', 'rejected', 'closed'].includes(c.status)
   const change = !isFinal ? changeFormFor(view) : null
-  const roles = [...ROLES].sort((a, b) => a.rank - b.rank).map((r) => ({ id: r.id, label: r.label }))
+
+  // 로그인한 사람이 이 안건에서 무엇을 할 수 있는지 (서버가 동작할 때 한 번 더 확인한다)
+  const user = await currentUser(sql)
+  const myRoles = roleLabels(user.roles).join(', ')
+  const canDecideNow = pending ? decidingRole(user, pending.requiredRole) !== null : false
+
+  // 업무 흐름(BPMN 방식): 선언 + 이 안건의 실제 상태
+  const flow = flowForCaseType(c.caseType)
+  const flowState = flow ? deriveFlowState(flow, view) : null
+  const approverLabel = pending ? roleLabel(pending.requiredRole) : c.authority ? roleLabel(c.authority) : '승인권자'
+  const laneLabels = { approver: approverLabel }
 
   return (
     <AppShell>
@@ -122,6 +135,20 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
           </Card.Content>
         </Card>
 
+        {flow && flowState && (
+          <Card>
+            <Card.Header>
+              <Card.Title>업무 흐름</Card.Title>
+              <Card.Description>{flow.description}</Card.Description>
+            </Card.Header>
+            <Card.Content className="flex flex-col gap-4">
+              <FlowStrip def={flow} state={flowState} laneLabels={laneLabels} />
+              <FlowDiagram def={flow} state={flowState} laneLabels={laneLabels} uid={`case${c.id}`} />
+              <p className="t-caption">초록 = 끝남 · 파란 테두리 = 지금 여기서 기다림 · 노랑 = 앞 단계가 끝나야 함 · 흐림 = 이번에는 가지 않는 길 · 점선 화살표 = 되돌아가 다시 평가</p>
+            </Card.Content>
+          </Card>
+        )}
+
         {notes.length > 0 && (
           <Card>
             <Card.Header><Card.Title>이 안건에서 같이 봐야 할 점</Card.Title></Card.Header>
@@ -138,7 +165,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
             <Card.Description>사람이 결정하거나 모르는 사실을 채우면, 시스템이 다시 평가하고 후속 작업을 만들어요.</Card.Description>
           </Card.Header>
           <Card.Content className="flex flex-col gap-8">
-            {pending && <DecisionPanel approvalId={pending.id} requiredLabel={roleLabel(pending.requiredRole)} roles={roles} />}
+            {pending && <DecisionPanel approvalId={pending.id} requiredLabel={roleLabel(pending.requiredRole)} allowed={canDecideNow} myRoles={myRoles} />}
             {openInfo.map((t) => (
               <div key={t.id} className="flex flex-col gap-2 rounded-card border border-default p-4">
                 <div className="flex items-center gap-2">
@@ -151,13 +178,13 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
                     참고: 조정이 되면 승인권자가 {String((t.detail.whatIf as { authorityLabel?: string }).authorityLabel ?? '미정')}(으)로 내려갈 수 있어요 (다른 확인이 끝난 경우).
                   </p>
                 )}
-                <InfoReplyForm taskId={t.id} fields={(t.detail.answerFields as { name: string; type: 'date' | 'boolean' | 'number' | 'text'; label: string }[]) ?? []} byDefault={`${t.assigneeRole ?? '담당자'}(모의)`} />
+                <InfoReplyForm taskId={t.id} fields={(t.detail.answerFields as { name: string; type: 'date' | 'boolean' | 'number' | 'text'; label: string }[]) ?? []} allowed={canHandle(user, t.assigneeRole)} assignee={t.assigneeRole ?? '담당 부서'} />
               </div>
             ))}
             {(c.status === 'rejected' || c.status === 'on_hold') && (
               <div className="flex flex-col gap-2">
                 <p className="t-small">{c.status === 'rejected' ? '부결된 안건이에요.' : '보류된 안건이에요.'} 조건을 보완했다면 다시 올릴 수 있어요.</p>
-                <div><ResubmitButton caseId={c.id} /></div>
+                <div><ResubmitButton caseId={c.id} allowed={canWork(user)} /></div>
               </div>
             )}
             {!pending && openInfo.length === 0 && c.status !== 'rejected' && c.status !== 'on_hold' && (
@@ -165,8 +192,8 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
             )}
             {change && (
               <div className="flex flex-col gap-2 border-t border-default pt-6">
-                <p className="t-small font-semibold">조건이 바뀌었나요? (조건 변경 시연)</p>
-                <FactChangeForm caseId={c.id} fact={change.fact} label={change.label} placeholder={change.placeholder} unitMultiplier={change.unit} hint={change.hint} />
+                <p className="t-small font-semibold">조건이 바뀌었나요?</p>
+                <FactChangeForm caseId={c.id} fact={change.fact} label={change.label} placeholder={change.placeholder} unitMultiplier={change.unit} hint={change.hint} allowed={canWork(user)} />
               </div>
             )}
           </Card.Content>
@@ -250,7 +277,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
                 <div className="flex items-center gap-2">
                   <OriginPill origin={t.dataOrigin} />
                   <Pill color={TASK_STATUS[t.status]?.color ?? 'default'}>{TASK_STATUS[t.status]?.label ?? t.status}</Pill>
-                  {t.status === 'open' && t.taskType !== 'info_request' && <TaskDoneButton taskId={t.id} />}
+                  {t.status === 'open' && t.taskType !== 'info_request' && <TaskDoneButton taskId={t.id} allowed={canHandle(user, t.assigneeRole)} />}
                 </div>
               </div>
             ))}

@@ -516,7 +516,7 @@ export async function listPendingApprovals(sql: Sql): Promise<(ApprovalRow & { c
   return rows.map((r: any) => ({ ...toApproval(r), caseTitle: r.case_title, deadline: d10(r.deadline) }))
 }
 
-// ───────────────────────── 초기화 (시연 반복용) ─────────────────────────
+// ───────────────────────── 초기화 (시험·점검용 — 화면에서는 부르지 않는다) ─────────────────────────
 
 /** 안건·이력·승인·작업·가정을 모두 지운다. 원본 복사본(source_rows)은 그대로 둔다. */
 export async function resetEngineData(sql: Sql): Promise<void> {

@@ -4,6 +4,7 @@
 //   covenant 위반 = 영업일 종가 < 30억 (매 영업일 1회라도. 기간 평균이 아니다. stand-alone, 그룹 지원 제외)
 //
 // 소스(이중계상 금지)
+//   (입력은 시맨틱 레이어의 측정값 ar_outstanding · ap_operating · po_payment 를 payment_date 차원으로 묶은 값)
 //   회수  : fin_ar_aging_ms.outstanding_krw 를 due_date 에
 //   지급  : fin_ap_aging_ms 중 po_id = 'NONE'(운영 매입채무)만 payment_due_date 에
 //   기타  : sc_purchase_orders_ms.amount_krw 를 payment_due_date 에   ← AP 의 PO 연결분은 여기서만 빠진다
@@ -12,14 +13,23 @@
 // 주말에 잡힌 입출금은 사라지지 않고 다음 영업일 종가에 합산된다(달력일 누적, 영업일에만 판정).
 // 다른 파일을 import 하지 않는다.
 
-export type Row = Record<string, string>
+/** 날짜(YYYY-MM-DD) → 금액. 시맨틱 레이어가 payment_date 차원으로 묶어 준 값이다. */
+export type DayAmounts = Record<string, number>
 
 export interface CashInputs {
-  cashDaily: readonly Row[] // fin_cash_daily_ms (실적)
-  ar: readonly Row[] // fin_ar_aging_ms
-  ap: readonly Row[] // fin_ap_aging_ms
-  po: readonly Row[] // sc_purchase_orders_ms
-  forecast?: readonly Row[] // fin_cash_forecast_ms (재무팀 공식 전망 — 정답이 아니라 대조용)
+  /** 자금일보(실적)의 마지막 영업일과 그날 기말 잔액 */
+  openingDate: string
+  openingBalance: number
+  /** 예상 회수액 (미회수 잔액을 회수 예정일에) */
+  inflows: DayAmounts
+  /** 운영 매입채무 지급액 (po_id=NONE 만 — 발주 연결분은 발주 쪽에서 한 번만 센다) */
+  payments: DayAmounts
+  /** 재고 발주 대금 (대금 지급 예정일에) */
+  poPayments: DayAmounts
+  /** 발주에 연결됐다고 적혔지만 발주 목록에 없는 매입채무 합계 (자료 품질) */
+  unlinkedApTotal: number
+  /** 재무팀 공식 전망 (정답이 아니라 대조용): 주(월요일) → 예상 기말 잔액 */
+  forecast: { week: string; closing: number }[]
 }
 
 export interface ExtraOutflow {
@@ -88,36 +98,29 @@ const isBusinessDay = (d: string): boolean => {
 
 export function simulateCash(inp: CashInputs, opt: CashOptions = DEFAULT_CASH_OPTIONS): CashResult {
   const issues: string[] = []
-  if (inp.cashDaily.length === 0) throw new Error('자금일보(fin_cash_daily_ms)가 비어 있어요')
-  const last = inp.cashDaily[inp.cashDaily.length - 1]
-  const openingBalance = num(last.closing_balance)
-  const openingDate = last.date
+  const openingBalance = inp.openingBalance
+  const openingDate = inp.openingDate
 
-  // 날짜별 흐름표
+  // 날짜별 흐름표 (기준일보다 이른 날짜의 흐름은 기준일에 몰아 처리한다)
   const inflow = new Map<string, number>()
   const outflow = new Map<string, number>()
   const add = (m: Map<string, number>, date: string, amt: number) => m.set(date, (m.get(date) ?? 0) + amt)
   const toAsOf = (d: string) => (d < opt.asOf ? opt.asOf : d)
 
   let excludedOverdue = 0
-  for (const r of inp.ar) {
-    const amt = num(r.outstanding_krw)
+  for (const [date, amt] of Object.entries(inp.inflows)) {
     if (amt <= 0) continue
-    if (r.due_date < opt.asOf) {
+    if (date < opt.asOf) {
       if (opt.overdueCollections === 'exclude') { excludedOverdue += amt; continue }
       add(inflow, opt.asOf, amt)
-    } else add(inflow, r.due_date, amt)
+    } else add(inflow, date, amt)
   }
   if (excludedOverdue > 0) issues.push(`기한이 지난 미수금 ${excludedOverdue.toLocaleString()}원을 회수되지 않는 것으로 제외했어요(보수적 가정).`)
-
-  const poIds = new Set(inp.po.map((p) => p.po_id))
-  for (const r of inp.ap) {
-    if (r.po_id === 'NONE') add(outflow, toAsOf(r.payment_due_date), num(r.amount_krw)) // 운영 매입채무만
-    else if (!poIds.has(r.po_id)) {
-      issues.push(`AP ${r.ap_id}: po_id ${r.po_id} 가 발주 목록에 없어 어느 쪽에도 반영되지 않았어요(이중계상 방지 규칙상 제외).`)
-    }
+  if (inp.unlinkedApTotal > 0) {
+    issues.push(`발주에 연결됐다고 적혔지만 발주 목록에 없는 매입채무 ${inp.unlinkedApTotal.toLocaleString()}원은 이중계상 방지 규칙상 어느 쪽에도 반영하지 않았어요.`)
   }
-  for (const p of inp.po) add(outflow, toAsOf(p.payment_due_date), num(p.amount_krw))
+  for (const [date, amt] of Object.entries(inp.payments)) add(outflow, toAsOf(date), amt)
+  for (const [date, amt] of Object.entries(inp.poPayments)) add(outflow, toAsOf(date), amt)
   for (const x of opt.extraOutflows) add(outflow, toAsOf(x.date), x.amount)
 
   // 달력일로 누적하고 영업일에만 판정한다
@@ -160,10 +163,10 @@ export function simulateCash(inp: CashInputs, opt: CashOptions = DEFAULT_CASH_OP
 
   // 재무팀 공식 전망과 대조 (week = 그 주 월요일, 비교 시점 = 그 주 마지막 영업일 종가)
   const forecastComparison: CashResult['forecastComparison'] = []
-  for (const f of inp.forecast ?? []) {
+  for (const f of inp.forecast) {
     const fri = addDays(f.week, 4)
     const sim = days.find((d) => d.date === fri)
-    if (sim) forecastComparison.push({ week: f.week, official: num(f.projected_closing_krw), simulated: sim.closing, diff: sim.closing - num(f.projected_closing_krw) })
+    if (sim) forecastComparison.push({ week: f.week, official: f.closing, simulated: sim.closing, diff: sim.closing - f.closing })
   }
 
   return {

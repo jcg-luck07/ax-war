@@ -1,0 +1,75 @@
+// 현재 사용자와 권한 (서버 전용).
+//
+// 실제 회사에서 쓰는 프로그램이라 "누가 결정했나"가 기록되고, 그 사람이 가진 역할만큼만 승인·회신·작업을 할 수 있다.
+//  - 배포본(production): axhub 가 알려 주는 로그인 사용자(이메일)를 쓴다. 이메일에 역할을 붙이는 일은 관리자가 /admin/users 에서 한다.
+//    로그인하지 않은 사람은 볼 수만 있고 아무것도 바꿀 수 없다.
+//  - 로컬 개발(next dev): axhub 로그인이 없으므로 .env.local 의 DEV_USER_* 값을 사용자로 쓴다 (화면에 역할 전환 같은 기능은 없다).
+//      DEV_USER_EMAIL / DEV_USER_NAME / DEV_USER_ROLES(쉼표 구분 또는 all) / DEV_USER_ADMIN(1)
+import type { Sql } from 'postgres'
+import { db, ensureSchema } from '@/lib/db'
+import { isAxhubConfigured, me } from '@/lib/axhub-server'
+import { ROLES } from '@/lib/rules/authority.rules'
+
+export interface AppUser {
+  authenticated: boolean
+  email: string
+  name: string
+  /** 가진 역할 id 들 */
+  roles: string[]
+  isAdmin: boolean
+}
+
+const ALL_ROLE_IDS = ROLES.map((r) => r.id)
+const validRoles = (ids: string[]) => ids.filter((x) => ALL_ROLE_IDS.includes(x))
+
+export async function currentUser(sqlArg?: Sql): Promise<AppUser> {
+  if (process.env.NODE_ENV !== 'production') {
+    const raw = process.env.DEV_USER_ROLES ?? 'all'
+    return {
+      authenticated: true,
+      email: process.env.DEV_USER_EMAIL || 'dev@local',
+      name: process.env.DEV_USER_NAME || '로컬 개발자',
+      roles: raw === 'all' ? ALL_ROLE_IDS : validRoles(raw.split(',').map((x) => x.trim())),
+      isAdmin: process.env.DEV_USER_ADMIN !== '0',
+    }
+  }
+  if (!isAxhubConfigured()) return { authenticated: false, email: '', name: '', roles: [], isAdmin: false }
+  const v = await me()
+  if (!v.authenticated) return { authenticated: false, email: '', name: '', roles: [], isAdmin: false }
+  await ensureSchema()
+  const sql = sqlArg ?? db()
+  const rows = await sql<{ roles: string[] }[]>`SELECT roles FROM user_roles WHERE lower(email) = lower(${v.email})`
+  return {
+    authenticated: true,
+    email: v.email,
+    name: v.name || v.email,
+    roles: validRoles(rows[0]?.roles ?? []),
+    isAdmin: Boolean(v.is_admin),
+  }
+}
+
+const roleById = (id: string) => ROLES.find((r) => r.id === id)
+
+/** 이 사람이 요구 권한(requiredRoleId)의 승인을 할 수 있는가. 가능하면 결정에 쓸 역할을 돌려준다(가장 낮은 충분한 역할). */
+export function decidingRole(user: AppUser, requiredRoleId: string): string | null {
+  const need = roleById(requiredRoleId)?.rank
+  if (need === undefined) return null
+  const ok = user.roles
+    .map((id) => roleById(id)!)
+    .filter((r) => r && r.rank >= need && r.rank > 0)
+    .sort((a, b) => a.rank - b.rank)
+  return ok[0]?.id ?? null
+}
+
+/** 작업의 담당(assignee 이름)을 이 사람이 처리할 수 있는가 */
+export function canHandle(user: AppUser, assignee: string | null): boolean {
+  if (!user.authenticated) return false
+  if (user.isAdmin) return true
+  if (!assignee) return user.roles.length > 0
+  return user.roles.some((id) => roleById(id)?.aliases?.includes(assignee))
+}
+
+/** 안건을 접수하거나 조건을 바꾸는 등 일반 업무를 할 수 있는가 (역할이 하나라도 있으면) */
+export const canWork = (user: AppUser) => user.authenticated && user.roles.length > 0
+
+export const roleLabels = (ids: string[]) => ids.map((id) => roleById(id)?.label ?? id)

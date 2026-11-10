@@ -86,7 +86,7 @@ try {
   })
 
   await t('확정된 안건은 조건이 바뀌어도 상태를 건드리지 않고 판정만 기록한다 (finalized)', async () => {
-    const r = await E.updateFacts(sql, cfg, c1, { patch: { annual_contract_value_krw: 100 }, reason: '사후 정정', origin: '가상입력', by: '시험' })
+    const r = await E.updateFacts(sql, cfg, c1, { patch: { annual_contract_value_krw: 100 }, reason: '사후 정정', origin: '사용자입력', by: '시험' })
     assert.equal(r.finalized, true); assert.equal((await E.getCaseView(sql, c1)).case.status, 'closed')
   })
 
@@ -94,7 +94,7 @@ try {
   let c2
   await t('조건 변경: 고정 피가 8억으로 내려가면 승인권자가 바뀌고 기존 승인 요청은 대체된다', async () => {
     const r0 = await E.openCase(sql, cfg, newContract(2_800_000_000)); c2 = r0.caseId
-    const r = await E.updateFacts(sql, cfg, c2, { patch: { annual_contract_value_krw: 800_000_000 }, reason: '혜인 측 고정 피 인하 제안', origin: '가상입력', by: '계약 담당' })
+    const r = await E.updateFacts(sql, cfg, c2, { patch: { annual_contract_value_krw: 800_000_000 }, reason: '혜인 측 고정 피 인하 제안', origin: '사용자입력', by: '계약 담당' })
     assert.equal(r.authorityChanged, true)
     assert.equal(r.decision.status, 'need_info', '10억 이하 → Masil 대표인데, 현금 하회 여부를 모르면 그룹 CEO 가능성이 남아 확정 불가')
     const v = await E.getCaseView(sql, c2)
@@ -112,20 +112,20 @@ try {
 
   await t('모의 회신(구간 밖) → 재평가 → 승인권자 Masil 대표로 확정, 새 승인 요청', async () => {
     const task = (await E.getCaseView(sql, c2)).tasks.find((x) => x.taskType === 'info_request')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { in_cash_breach_window: false }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { in_cash_breach_window: false }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r.decision.status, 'decided'); assert.equal(r.decision.authority, 'masil_ceo')
     const v = await E.getCaseView(sql, c2)
     assert.equal(v.case.status, 'pending_approval'); assert.equal(v.approvals.filter((a) => a.status === 'pending')[0].requiredRole, 'masil_ceo')
     const done = v.tasks.find((x) => x.id === task.id)
-    assert.equal(done.status, 'done'); assert.equal(done.dataOrigin, '가상입력')
-    await assert.rejects(() => E.provideInfo(sql, cfg, task.id, { answers: {}, origin: '가상입력', by: 'x' }), /이미 처리/)
+    assert.equal(done.status, 'done'); assert.equal(done.dataOrigin, '사용자입력')
+    await assert.rejects(() => E.provideInfo(sql, cfg, task.id, { answers: {}, origin: '사용자입력', by: 'x' }), /이미 처리/)
   })
 
   await t('모의 회신(구간 안)이면 반대로 그룹 CEO 로 올라간다 — 금액이 같아도 결론이 달라짐', async () => {
     const r0 = await E.openCase(sql, cfg, newContract(800_000_000))
     assert.equal(r0.decision.status, 'need_info')
     const task = (await E.getCaseView(sql, r0.caseId)).tasks.find((x) => x.taskType === 'info_request')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { in_cash_breach_window: true }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { in_cash_breach_window: true }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r.decision.authority, 'group_ceo')
   })
 

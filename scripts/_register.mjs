@@ -27,13 +27,15 @@ registerHooks({
   resolve(specifier, context, nextResolve) {
     let base = null
     if (specifier.startsWith('@/')) base = resolve(root, specifier.slice(2))
-    else if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:')) {
+    else if ((specifier.startsWith('./') || specifier.startsWith('../')) && context.parentURL?.startsWith('file:') && !context.parentURL.includes('/node_modules/')) {
       base = resolve(dirname(fileURLToPath(context.parentURL)), specifier)
     }
     if (base) {
       const hit = withExt(base)
       if (hit) return nextResolve(pathToFileURL(hit).href, context)
     }
+    // next/headers 같은 Next 내부 경로는 확장자를 붙여야 node 가 찾는다 (시험에서 import 만 되면 충분하다)
+    if (/^next\/[a-z-]+$/.test(specifier)) return nextResolve(`${specifier}.js`, context)
     return nextResolve(specifier, context)
   },
 })

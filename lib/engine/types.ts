@@ -11,7 +11,7 @@ export type CaseStatus =
   | 'closed'
 
 /** 데이터의 성격. 원본과 가정을 항상 구분해 표시한다. */
-export type DataOrigin = '원본' | '가정' | '합성' | '가상입력'
+export type DataOrigin = '원본' | '가정' | '합성' | '가상입력' | '사용자입력'
 
 export type ActorKind = '시스템' | '사람'
 

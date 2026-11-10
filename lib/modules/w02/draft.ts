@@ -9,16 +9,17 @@ export async function answerAllOpenInfo(
   cfg: EngineConfig,
   fact: string,
   answers: Record<string, string | number | boolean | null>,
-  input: { origin: DataOrigin; by: string; caseType?: string },
+  input: { origin: DataOrigin; by: string; caseType?: string; canHandle?: (assignee: string | null) => boolean },
 ): Promise<FactsChangeResult[]> {
   const rows = await sql`
-    SELECT t.id FROM tasks t JOIN decision_cases c ON c.id = t.case_id
+    SELECT t.id, t.assignee_role FROM tasks t JOIN decision_cases c ON c.id = t.case_id
     WHERE t.task_type = 'info_request' AND t.status = 'open' AND t.detail->>'fact' = ${fact}
       AND (${input.caseType ?? null}::text IS NULL OR c.case_type = ${input.caseType ?? null})
     ORDER BY t.id
   `
   const out: FactsChangeResult[] = []
   for (const r of rows) {
+    if (input.canHandle && !input.canHandle(r.assignee_role as string | null)) continue // 내가 처리할 수 있는 확인 요청만
     out.push(await provideInfo(sql, cfg, Number(r.id), { answers, origin: input.origin, by: input.by }))
   }
   return out

@@ -20,7 +20,7 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       subject_refs  jsonb       NOT NULL DEFAULT '{}'::jsonb, -- 연결된 대상 번호. 예: {"influencer":"INF-001"}
       payload       jsonb       NOT NULL DEFAULT '{}'::jsonb, -- 업무별 세부 내용
       authority     text,                                 -- 규칙집이 판정한 승인권자
-      data_origin   text        NOT NULL DEFAULT '원본',  -- 원본 | 가정 | 가상입력 (원본 vs 가정 구분)
+      data_origin   text        NOT NULL DEFAULT '원본',  -- 원본 | 가정 | 합성 | 가상입력 | 사용자입력
       created_at    timestamptz NOT NULL DEFAULT now(),
       updated_at    timestamptz NOT NULL DEFAULT now()
     )
@@ -89,6 +89,16 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
     )
   `
   await sql`CREATE INDEX IF NOT EXISTS assumptions_key_idx ON assumptions (key, created_at)`
+
+  // ⑧ 사용자·역할 — 누가 어떤 승인·작업을 할 수 있는지 (이메일은 axhub 로그인 이메일)
+  await sql`
+    CREATE TABLE IF NOT EXISTS user_roles (
+      email        text        PRIMARY KEY,
+      display_name text        NOT NULL,
+      roles        text[]      NOT NULL DEFAULT ARRAY[]::text[],
+      updated_at   timestamptz NOT NULL DEFAULT now()
+    )
+  `
 
   // ⑥ 원본 행 복사본 — CSV 한 줄을 그대로 담는다. 원본 파일은 읽기만 하고 절대 고치지 않는다.
   await sql`

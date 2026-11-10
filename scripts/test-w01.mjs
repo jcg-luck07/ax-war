@@ -10,7 +10,7 @@ import { PO_CASE_TYPE } from '@/lib/modules/w01/handlers'
 const { sql, cfg, cash } = await getEngine()
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
-const mk = (date) => E.openCase(sql, cfg, { caseType: PO_CASE_TYPE, title: `시험 발주 ${date ?? '(지급일 모름)'}`, dataOrigin: '가상입력', payload: { facts: { creates_cash_outflow: true, payment_due_date: date, linked_to_group_300: false } } })
+const mk = (date) => E.openCase(sql, cfg, { caseType: PO_CASE_TYPE, title: `시험 발주 ${date ?? '(지급일 모름)'}`, dataOrigin: '사용자입력', payload: { facts: { creates_cash_outflow: true, payment_due_date: date, linked_to_group_300: false } } })
 
 try {
   await E.resetEngineData(sql)
@@ -37,7 +37,7 @@ try {
   })
   await t('회신(지급일 9/15) → 재평가 → SCM 으로 확정되고, SCM 이 승인하면 발주 전달·현금 반영 작업이 생긴다', async () => {
     const task = (await E.getCaseView(sql, unknownId)).tasks.find((x) => x.taskType === 'info_request')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { payment_due_date: '2026-09-15' }, origin: '가상입력', by: '재무(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { payment_due_date: '2026-09-15' }, origin: '사용자입력', by: '재무(모의)' })
     assert.equal(r.decision.authority, 'scm')
     const ap = (await E.getCaseView(sql, unknownId)).approvals.find((a) => a.status === 'pending')
     const d = await E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'scm', byName: '' })

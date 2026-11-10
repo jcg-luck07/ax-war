@@ -60,7 +60,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
         <Card>
           <Card.Content>
             {rows.length === 0 ? (
-              <p className="t-small">조건에 맞는 안건이 없어요. {all.length === 0 && '시연 도구에서 안건을 불러오세요.'}</p>
+              <p className="t-small">조건에 맞는 안건이 없어요. {all.length === 0 && '안건 접수에서 새 안건을 받으세요.'}</p>
             ) : (
               <Table>
                 <Table.ScrollContainer>

@@ -4,11 +4,17 @@
 import assert from 'node:assert/strict'
 import * as E from '@/lib/engine/engine'
 import { getEngine } from '@/lib/app/engine'
-import { seedW02 } from '@/lib/modules/w02/seed'
+import { importExpansionPlans, receiveContractNotice } from '@/lib/modules/w02/intake'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 
 const { sql, cfg, cash } = await getEngine()
+// 안건 접수: 통보서 값으로 전속계약, 기안 파일에서 확대 기안 25건
+const seedW02 = async () => {
+  const contract = await receiveContractNotice(sql, cfg, { influencerId: 'INF-001', annualFixedFeeKrw: 2_800_000_000, notifyDeadline: '2026-07-17', currentExpiry: '2026-08-31', fixedFeePaymentDate: null, note: '' }, '시험')
+  const r = await importExpansionPlans(sql, cfg, '시험')
+  return { contract, plans: { length: r.imported } }
+}
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const view = (id) => E.getCaseView(sql, id)
@@ -22,8 +28,8 @@ try {
   console.log('현금 하회 구간(기준선):', cash.windows.map((w) => `${w.start}~${w.end}`).join(', '), `· 최저 ${(cash.minBalance / 1e8).toFixed(2)}억\n`)
 
   let contractId
-  await t('시드: 전속계약 1건 + 확대 기안 25건이 접수·평가된다', async () => {
-    const r = await seedW02(sql, cfg)
+  await t('접수: 전속계약 1건 + 확대 기안 25건이 접수·평가된다', async () => {
+    const r = await seedW02()
     contractId = r.contract.caseId
     assert.equal(r.plans.length, 25)
     const all = await E.listCases(sql)
@@ -66,12 +72,12 @@ try {
 
   // ───────────── 상황 2: 조건 변경 (+재시드로 독립) ─────────────
   await E.resetEngineData(sql)
-  const s2 = await seedW02(sql, cfg)
+  const s2 = await seedW02()
   contractId = s2.contract.caseId
 
   await t('[상황 2 조건 변경 A] 고정 피 28억→20억: 여전히 10억 초과 → 결론 유지, 같은 승인 요청이 그대로 유효', async () => {
     const before = (await view(contractId)).approvals.find((a) => a.status === 'pending')
-    const r = await E.updateFacts(sql, cfg, contractId, { patch: { annual_contract_value_krw: 2_000_000_000 }, reason: '혜인 측 고정 피 인하 제안(20억)', origin: '가상입력', by: '계약 담당' })
+    const r = await E.updateFacts(sql, cfg, contractId, { patch: { annual_contract_value_krw: 2_000_000_000 }, reason: '혜인 측 고정 피 인하 제안(20억)', origin: '사용자입력', by: '계약 담당' })
     assert.equal(r.authorityChanged, false); assert.equal(r.decision.authority, 'ceo_board')
     const after = (await view(contractId)).approvals.find((a) => a.status === 'pending')
     assert.equal(after.id, before.id, '승인 요청이 새로 만들어지지 않고 유지됨')
@@ -79,7 +85,7 @@ try {
   })
 
   await t('[상황 2 조건 변경 B] 고정 피 20억→8억: 10억 이하라 Masil 대표 전결이 되려 하지만, 현금 유출일·300억 연결 여부를 모르면 확정 불가 → 기존 승인 요청은 대체되고 확인 요청 2건', async () => {
-    const r = await E.updateFacts(sql, cfg, contractId, { patch: { annual_contract_value_krw: 800_000_000 }, reason: '혜인 측 추가 인하 제안(8억)', origin: '가상입력', by: '계약 담당' })
+    const r = await E.updateFacts(sql, cfg, contractId, { patch: { annual_contract_value_krw: 800_000_000 }, reason: '혜인 측 추가 인하 제안(8억)', origin: '사용자입력', by: '계약 담당' })
     assert.equal(r.authorityChanged, true); assert.equal(r.decision.status, 'need_info')
     const v = await view(contractId)
     assert.equal(v.approvals.filter((a) => a.status === 'pending').length, 0)
@@ -90,13 +96,13 @@ try {
   // ───────────── 상황 3: 정보 부족 → 회신 → 이어서 처리 ─────────────
   await t('[상황 3 정보 부족] 재무 회신(고정 피 지급일 9/15 = 하회 구간 밖)만으로는 부족 — 300억 연결 여부가 남아 계속 확인 필요', async () => {
     const task = await infoTask(contractId, 'in_cash_breach_window')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { fixed_fee_payment_date: '2026-09-15' }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { fixed_fee_payment_date: '2026-09-15' }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r.decision.status, 'need_info')
     assert.deepEqual(r.decision.unresolved.map((u) => u.missingFacts).flat(), ['linked_to_group_300'])
   })
   await t('[상황 3 이어서] 300억과 무관하다는 회신 → 재평가 → Masil 대표로 확정, 새 승인 요청', async () => {
     const task = await infoTask(contractId, 'linked_to_group_300')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { linked_to_group_300: false }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { linked_to_group_300: false }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r.decision.status, 'decided'); assert.equal(r.decision.authority, 'masil_ceo')
     const ap = (await view(contractId)).approvals.find((a) => a.status === 'pending')
     assert.equal(ap.requiredRole, 'masil_ceo')
@@ -105,12 +111,12 @@ try {
     const r0 = await E.openCase(sql, cfg, { caseType: CONTRACT_CASE_TYPE, title: '시험용 8억 계약', deadline: '2026-07-17', payload: { facts: { annual_contract_value_krw: 800_000_000, creates_cash_outflow: true, fixed_fee_payment_date: null, linked_to_group_300: false } } })
     assert.equal(r0.decision.status, 'need_info')
     const task = await infoTask(r0.caseId, 'in_cash_breach_window')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { fixed_fee_payment_date: '2026-07-28' }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { fixed_fee_payment_date: '2026-07-28' }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r.decision.authority, 'group_ceo')
   })
 
   await t('[상황 3 기안 묶음] 25건이 같은 질문(300억 연결?)을 하므로 한 번의 회신으로 구간 밖 기안 모두 확정된다', async () => {
-    const res = await answerAllOpenInfo(sql, cfg, 'linked_to_group_300', { linked_to_group_300: false }, { origin: '가상입력', by: '재무팀(모의)', caseType: EXPANSION_CASE_TYPE })
+    const res = await answerAllOpenInfo(sql, cfg, 'linked_to_group_300', { linked_to_group_300: false }, { origin: '사용자입력', by: '재무팀(모의)', caseType: EXPANSION_CASE_TYPE })
     assert.ok(res.length > 0)
     const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
     assert.ok(plans.every((p) => p.status === 'pending_approval'), '남은 need_info 가 없어야 함')
@@ -125,7 +131,7 @@ try {
     const p = plans.find((x) => x.payload.evaluation.facts.in_cash_breach_window === true)
     assert.equal(p.authority, 'group_ceo')
     const task = await infoTask(p.id, 'settlement_date')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { settlement_date: '2026-08-24' }, origin: '가상입력', by: '재무팀(모의)' })
+    const r = await E.provideInfo(sql, cfg, task.id, { answers: { settlement_date: '2026-08-24' }, origin: '사용자입력', by: '재무팀(모의)' })
     // 집행일이 구간 밖이 되어 그룹 CEO 사유는 사라졌지만, 이 기안은 300억 연결 여부를 아직 모른다 → 바로 확정하지 않고 다시 확인
     assert.equal(r.decision.authority, 'masil_ceo'); assert.equal(r.authorityChanged, true); assert.equal(r.decision.status, 'need_info')
     let v = await view(p.id)
@@ -133,7 +139,7 @@ try {
     assert.equal(v.approvals.filter((a) => a.status === 'pending').length, 0)
     const link = await infoTask(p.id, 'linked_to_group_300')
     assert.ok(link, '300억 연결 여부 확인 요청이 새로 생김')
-    const r2 = await E.provideInfo(sql, cfg, link.id, { answers: { linked_to_group_300: false }, origin: '가상입력', by: '재무팀(모의)' })
+    const r2 = await E.provideInfo(sql, cfg, link.id, { answers: { linked_to_group_300: false }, origin: '사용자입력', by: '재무팀(모의)' })
     assert.equal(r2.decision.status, 'decided')
     v = await view(p.id)
     assert.equal(v.approvals.filter((a) => a.status === 'pending')[0].requiredRole, 'masil_ceo')

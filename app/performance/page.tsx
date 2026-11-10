@@ -5,7 +5,6 @@ import { PageHeader } from '@/components/ax'
 import { Pill } from '@/components/bits'
 import { fmtPct, fmtRoas, fmtWon } from '@/lib/app/format'
 import { tryPerformance } from '@/lib/app/queries'
-import { METRICS } from '@/lib/metrics/definitions'
 import { DEFAULT_ASSUMPTIONS, type PerfAssumptions } from '@/lib/metrics/performance'
 
 export const dynamic = 'force-dynamic'
@@ -131,25 +130,7 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
           </>
         )}
 
-        <Card>
-          <Card.Header>
-            <Card.Title>지표 사전</Card.Title>
-            <Card.Description>지표 정의는 한 곳(lib/metrics/definitions.ts)에만 있고 모든 화면이 이 정의를 써요.</Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-4">
-            {METRICS.map((m) => (
-              <div key={m.id} className="flex flex-col gap-1 border-b border-default pb-3">
-                <div className="flex items-center gap-2">
-                  <span className="t-small font-semibold">{m.label}</span>
-                  <Pill color={m.origin === '원본 정의' ? 'success' : 'warning'}>{m.origin}</Pill>
-                </div>
-                <span className="t-small">{m.formula}</span>
-                <span className="t-caption">기준: {m.basis}</span>
-                {m.caveats.map((c) => <span key={c} className="t-caption">· {c}</span>)}
-              </div>
-            ))}
-          </Card.Content>
-        </Card>
+        <p className="t-caption">지표의 정의·기준·주의사항은 <a className="text-primary" href="/model">데이터 모델</a> 화면에 있어요.</p>
       </div>
     </AppShell>
   )

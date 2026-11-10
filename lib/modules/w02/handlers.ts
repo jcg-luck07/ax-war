@@ -8,7 +8,7 @@ import type { AuthorityDecision, Facts } from '../../rules/types'
 import type { CaseHandler, HandlerCtx, TaskSpec } from '../../engine/engine'
 import type { DecisionCase } from '../../engine/types'
 import { dateInBreachWindow, type BreachWindow } from '../cash/simulate'
-import { CONTRACT_CASE_TYPE, CONTRACT_NOTICE, EXPANSION_CASE_TYPE } from './contract-notice'
+import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from './contract-notice'
 
 export interface W02Deps {
   decide(caseType: string, facts: Facts): AuthorityDecision
@@ -75,13 +75,13 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
       if (outcome === 'approved') {
         return [
           { key: 'doc-conditions', taskType: 'document', title: '승인조건 문서화', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
-          { key: 'notify-counterparty', taskType: 'notify', title: '상대방(혜인 소속 에이전시)에 결과 통보 — 통보 기한 전', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, note: `기한(${CONTRACT_NOTICE.notifyDeadline}) 이후 통보는 효력이 없고 동일 조건 자동 갱신이 일어남` }, dataOrigin: '가정' },
+          { key: 'notify-counterparty', taskType: 'notify', title: '상대방(인플루언서 소속 에이전시)에 결과 통보 — 통보 기한 전', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, note: `기한(${deadline}) 이후 통보는 효력이 없고 동일 조건 자동 갱신이 일어남` }, dataOrigin: '가정' },
           { key: 'record-reply', taskType: 'record', title: '통보·회신 기록 보관', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
         ]
       }
       if (outcome === 'rejected') {
         return [
-          { key: 'rethink-before-deadline', taskType: 'review', title: '기한 전 재검토 — 조건 변경안 또는 해지 통보 검토', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, warning: `${CONTRACT_NOTICE.notifyDeadline} 까지 통보하지 않으면 동일 조건으로 1년 자동 갱신(체결로 간주)되고, 이후 해지 시 잔여 고정 피의 50% 위약금` }, dataOrigin: '가정' },
+          { key: 'rethink-before-deadline', taskType: 'review', title: '기한 전 재검토 — 조건 변경안 또는 해지 통보 검토', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, warning: `${deadline} 까지 통보하지 않으면 동일 조건으로 1년 자동 갱신(체결로 간주)되고, 이후 해지하면 위약금이 생길 수 있음` }, dataOrigin: '가정' },
           { key: 'watch-deadline', taskType: 'monitor', title: '통보 기한 모니터링 — 미결정이면 자동 갱신됨', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
         ]
       }
@@ -136,7 +136,7 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
       if (outcome === 'rejected') {
         return [
           { key: 'rethink-allocation', taskType: 'review', title: '[제안] 부결 후 예산 배분 재검토 — 효율 상위 인플루언서 검토 (표본 한계 명시)', assigneeRole: '마케팅', dueDate: null, detail: { note: '원본 문서에 없는 제안입니다. 과거 평균 효율을 늘린 예산에 곱하면 선형성·포화를 가정하게 됩니다(A05).' }, dataOrigin: '가정' },
-          { key: 'check-contract', taskType: 'monitor', title: '혜인 전속계약은 별개 결정 — 통보 기한(7/17) 확인', assigneeRole: '계약 담당', dueDate: CONTRACT_NOTICE.notifyDeadline, detail: { source: '00_common/approval_authority_policy.md', note: '기안을 부결해도 전속계약은 갱신될 수 있음' }, dataOrigin: '원본' },
+          { key: 'check-contract', taskType: 'monitor', title: '해당 인플루언서의 전속계약은 별개 결정 — 통보 기한 확인', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { source: '00_common/approval_authority_policy.md', note: '기안을 부결해도 전속계약은 갱신될 수 있음' }, dataOrigin: '원본' },
         ]
       }
       return [{ key: 'hold-reason', taskType: 'review', title: '보류 사유 확인 후 재상신 준비', assigneeRole: '마케팅', dueDate: c.deadline, detail: {}, dataOrigin: '가정' }]
