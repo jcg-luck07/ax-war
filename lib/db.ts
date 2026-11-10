@@ -43,10 +43,10 @@ export function db(): ReturnType<typeof postgres> {
   }
   // prepare:false — 일부 연결 풀러(transaction pooling)는 prepared statement 를 지원하지 않아요.
   if (process.env.NODE_ENV !== 'production') {
-    _global.__axhubSql ??= postgres(RUNTIME_URL, { prepare: false })
+    _global.__axhubSql ??= postgres(RUNTIME_URL, { prepare: false, onnotice: () => {} })
     return _global.__axhubSql
   }
-  _sql ??= postgres(RUNTIME_URL, { prepare: false })
+  _sql ??= postgres(RUNTIME_URL, { prepare: false, onnotice: () => {} })
   return _sql
 }
 
@@ -59,7 +59,7 @@ let _schema: Promise<void> | null = null
 export function ensureSchema(): Promise<void> {
   _schema ??= (async () => {
     // 마이그레이션은 직결 세션(DIRECT_URL)으로 — advisory lock 등 세션 기능이 필요할 수 있어요.
-    const migrate = postgres(DIRECT_URL, { max: 1 })
+    const migrate = postgres(DIRECT_URL, { max: 1, onnotice: () => {} }) // IF NOT EXISTS 안내 메시지는 무시
     try {
       await migrate`
         CREATE TABLE IF NOT EXISTS todos (

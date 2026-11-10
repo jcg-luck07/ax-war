@@ -13,9 +13,10 @@ export type CaseStatus =
 /** 데이터의 성격. 원본과 가정을 항상 구분해 표시한다. */
 export type DataOrigin = '원본' | '가정' | '합성' | '가상입력'
 
-export type ActorKind = '시스템' | 'AI' | '사람'
+export type ActorKind = '시스템' | '사람'
 
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'on_hold'
+/** superseded: 재평가로 승인권자가 바뀌어 더 이상 유효하지 않은 승인 요청 */
+export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'on_hold' | 'superseded'
 
 export type TaskStatus = 'open' | 'done' | 'cancelled'
 

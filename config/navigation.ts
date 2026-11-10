@@ -8,10 +8,10 @@
 // 아이콘은 @phosphor-icons/react 에서 골라요 (https://phosphoricons.com — 이름 그대로 import).
 // href 가 http(s):// 로 시작하면 새 탭으로 열려요.
 // 관리자만 쓰는 화면은 adminOnly: true — 관리자가 아닌 사람의 메뉴에서 빠져요 (화면 자체의 권한 확인은 따로 해요).
-import { House, SquaresFour, type Icon } from "@phosphor-icons/react";
+import { ChartBar, House, ListChecks, PlayCircle, Scales, Wallet, type Icon } from "@phosphor-icons/react";
 
 // 왼쪽 위 앱 아이콘. 앱이 하는 일에 맞는 아이콘으로 바꿔요 (예: 휴가 앱이면 AirplaneTilt, 거래처 앱이면 Buildings).
-export const APP_ICON: Icon = SquaresFour;
+export const APP_ICON: Icon = Scales;
 
 export type NavItem = {
   label: string;
@@ -22,4 +22,8 @@ export type NavItem = {
 
 export const NAVIGATION: NavItem[] = [
   { label: "홈", href: "/", icon: House },
+  { label: "안건", href: "/cases", icon: ListChecks },
+  { label: "인플루언서 성과", href: "/performance", icon: ChartBar },
+  { label: "현금 재전망", href: "/cash", icon: Wallet },
+  { label: "시연 도구", href: "/demo", icon: PlayCircle },
 ];

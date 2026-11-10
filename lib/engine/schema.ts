@@ -34,7 +34,7 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       case_id     bigint      NOT NULL REFERENCES decision_cases (id) ON DELETE CASCADE,
       event_type  text        NOT NULL,                   -- created | evaluated | approval_requested | decided | task_created | info_requested | info_received | status_changed ...
-      actor_kind  text        NOT NULL,                   -- 시스템 | AI | 사람
+      actor_kind  text        NOT NULL,                   -- 시스템 | 사람
       actor_name  text,
       detail      jsonb       NOT NULL DEFAULT '{}'::jsonb, -- 근거 · 이전/이후 상태 등
       created_at  timestamptz NOT NULL DEFAULT now()

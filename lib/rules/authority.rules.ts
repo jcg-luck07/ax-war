@@ -15,6 +15,7 @@ import type { Role, Rule } from './types'
 
 export const ROLES: readonly Role[] = [
   { id: 'marketing_team', label: '마케팅팀', rank: 1 },
+  { id: 'scm', label: 'SCM', rank: 2 },
   { id: 'masil_ceo', label: 'Masil 대표', rank: 2 },
   { id: 'ceo_board', label: 'CEO/이사회', rank: 3 },
   { id: 'group_ceo', label: '그룹 CEO', rank: 3 },
@@ -77,6 +78,19 @@ export const AUTHORITY_RULES: readonly Rule[] = [
     origin: '원본',
     remark:
       '"기안 총액"은 mkt_budget_plan_ms.csv 의 요청액 합계(약 1.81억)로 해석했다. 회의록도 "총액 기준상 전결 범위를 넘는지 확인 필요"라고만 한다 → 해석 가정.',
+  },
+
+  // ── 두 번째 업무 예: 재고 발주 (W01) — 엔진은 그대로이고 규칙만 추가했다 ──────
+  {
+    id: 'AUTH-PO-SCM',
+    title: '재고 발주 승인 (평시)',
+    appliesTo: ['w01.purchase_order'],
+    all: [{ fact: 'creates_cash_outflow', op: 'eq', value: true }],
+    outcome: { authority: 'scm' },
+    layer: 'business',
+    source: { file: POLICY, note: '재고 발주 승인은 SCM' },
+    origin: '원본',
+    remark: '평시 규정이다. 현금 하회 예상 구간에 대금이 나가면 아래 공통 규칙이 이 전결을 무력화한다.',
   },
 
   // ── 공통 규칙 (모든 업무, 평시 전결 규정에 우선) ───────────────────
