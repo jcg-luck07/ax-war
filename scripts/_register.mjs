@@ -17,7 +17,13 @@ if (existsSync(envFile)) {
   }
 }
 
-const isFile = (p) => existsSync(p) && statSync(p).isFile()
+// 시험(test-*.mjs)은 사용자가 쓰는 DB 가 아니라 `<이름>_test` DB 를 쓴다 (시험이 안건을 지우기 때문).
+// 처음 한 번: DB 를 만들고 원본을 복사해 둔다 → npm run db:test-setup
+if (/test-[^\\/]*\.mjs$/.test(process.argv[1] ?? '') && process.env.DATABASE_URL && !/_test(\?|$)/.test(process.env.DATABASE_URL)) {
+  process.env.DATABASE_URL = process.env.DATABASE_URL.replace(/\/([^/?]+)(\?|$)/, '/$1_test$2')
+}
+
+const isFile =(p) => existsSync(p) && statSync(p).isFile()
 function withExt(base) {
   for (const c of [base, `${base}.ts`, `${base}.tsx`, `${base}/index.ts`, `${base}/index.tsx`]) if (isFile(c)) return c
   return null

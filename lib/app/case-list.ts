@@ -19,12 +19,20 @@ export interface CaseRow {
   amount: number | null
   /** 상태 글자 (예: 재무팀 검토) 와 정렬용 단계 */
   state: string
+  /** "외 N" 을 뺀 기본 상태 — 상태 필터가 이 값으로 거른다 */
+  stateBase: string
   stage: number
-  /** 결산일(돈이 나가는 날) */
+  /** 지급 예정일(돈이 나가는 날) */
   settlementDate: string | null
   /** 계약 체결 기한 */
   deadline: string | null
   dataOrigin: string
+  /** 같은 인플루언서의 안건을 찾는 데 쓴다 (캠페인 집행은 소속 인플루언서) */
+  influencerId: string
+  /** 이 안건이 들어 있는 기안 번호 */
+  draftId: number | null
+  /** 승인권자 이름 — 아직 확정되지 않았으면 null */
+  approverLabel: string | null
 }
 
 type Facts = Record<string, unknown>
@@ -40,12 +48,14 @@ export function plainTitle(title: string): string {
 }
 
 export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
-  const [cases, approvals, tasks, events] = await Promise.all([
+  const [cases, approvals, tasks, events, draftRows] = await Promise.all([
     listCases(sql),
     sql`SELECT case_id, status, required_role FROM approvals ORDER BY id`,
     sql`SELECT case_id, task_type, status, title, assignee_role, detail FROM tasks ORDER BY id`,
     sql`SELECT case_id, event_type FROM case_events`,
+    sql`SELECT id, draft_id FROM decision_cases`,
   ])
+  const draftOf = new Map((draftRows as unknown as { id: number; draft_id: number | null }[]).map((r) => [Number(r.id), r.draft_id === null ? null : Number(r.draft_id)]))
   const by = <T extends { case_id: unknown }>(rows: T[]) => {
     const m = new Map<number, T[]>()
     for (const r of rows) {
@@ -84,10 +94,53 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
       categoryLabel: caseTypeLabel(c.caseType),
       amount: Number.isFinite(amount) && amount > 0 ? amount : null,
       state: s.text,
+      stateBase: s.base,
       stage: s.stage,
       settlementDate: settlement || null,
       deadline: c.deadline,
       dataOrigin: c.dataOrigin,
+      influencerId: c.subjectRefs.influencer ?? '',
+      draftId: draftOf.get(c.id) ?? null,
+      approverLabel: c.authority ? roleLabel(c.authority) : null,
+    }
+  })
+}
+
+/** 기안 한 줄 — 안건들을 묶은 요약 */
+export interface DraftRow {
+  id: number
+  name: string
+  /** 종류 — 안건이 모두 같은 종류면 그 이름, 섞여 있으면 "여러 종류" */
+  categoryLabel: string
+  caseCount: number
+  /** 안건 요청금액 합계(원). 금액이 있는 안건이 하나도 없으면 null */
+  amount: number | null
+  /** 상태별 안건 수 요약. 예: "재무팀 검토 필요 13 · 승인 필요 12" */
+  stateSummary: string
+  /** 가장 앞 단계 (정렬용) */
+  stage: number
+  /** 안건들 가운데 가장 빠른 계약 체결 기한 */
+  deadline: string | null
+}
+
+export async function loadDraftRows(sql: Sql, cases: CaseRow[]): Promise<DraftRow[]> {
+  const drafts = await sql`SELECT id, name FROM drafts ORDER BY id`
+  return (drafts as unknown as { id: number; name: string }[]).map((d) => {
+    const mine = cases.filter((c) => c.draftId === Number(d.id))
+    const labels = [...new Set(mine.map((c) => c.categoryLabel))]
+    const amounts = mine.map((c) => c.amount).filter((a): a is number => a !== null)
+    const by = new Map<string, { n: number; stage: number }>()
+    for (const c of mine) by.set(c.stateBase, { n: (by.get(c.stateBase)?.n ?? 0) + 1, stage: c.stage })
+    const deadlines = mine.map((c) => c.deadline).filter((x): x is string => !!x).sort()
+    return {
+      id: Number(d.id),
+      name: String(d.name),
+      categoryLabel: labels.length === 1 ? labels[0] : labels.length === 0 ? '—' : '여러 종류',
+      caseCount: mine.length,
+      amount: amounts.length ? amounts.reduce((a, b) => a + b, 0) : null,
+      stateSummary: [...by.entries()].sort((a, b) => a[1].stage - b[1].stage).map(([s, v]) => `${s} ${v.n}`).join(' · ') || '—',
+      stage: Math.min(9, ...mine.map((c) => c.stage)),
+      deadline: deadlines[0] ?? null,
     }
   })
 }

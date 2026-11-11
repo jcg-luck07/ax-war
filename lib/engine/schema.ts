@@ -25,6 +25,9 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       updated_at    timestamptz NOT NULL DEFAULT now()
     )
   `
+  // 기안: 부서 사이의 결정을 묶는 단위. 안건(decision_cases)은 기안 하나에 속한다 (앱 안의 분류일 뿐 원본 자료와는 무관).
+  await sql`CREATE TABLE IF NOT EXISTS drafts (id serial PRIMARY KEY, name text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`
+  await sql`ALTER TABLE decision_cases ADD COLUMN IF NOT EXISTS draft_id integer`
   await sql`CREATE INDEX IF NOT EXISTS decision_cases_type_status_idx ON decision_cases (case_type, status)`
   await sql`CREATE INDEX IF NOT EXISTS decision_cases_deadline_idx ON decision_cases (deadline)`
 

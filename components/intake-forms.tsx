@@ -4,7 +4,8 @@
 // 무엇을 할 수 있는지는 서버가 정해서 넘겨주고(allowed), 실제 권한·필수 항목 확인은 서버가 다시 한다.
 import { useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
-import { formatDateInput } from '@/lib/app/date-input'
+import { digitsOnly, formatDateInput, formatMoneyInput } from '@/lib/app/date-input'
+import { fmtWon } from '@/lib/app/format'
 import { Button, toast } from '@heroui/react'
 import { acceptSubmissionAction, returnSubmissionAction } from '@/app/actions'
 import { CONTRIBUTION_FIELDS, CONTRIBUTION_FORMULA, calcContribution, validateContribution } from '@/lib/metrics/contribution-calc'
@@ -40,8 +41,6 @@ const NEW = '__new__'
 // 첨부서류 한 줄: 종류 이름 | 파일 선택 | (지우기) — 고정 칸과 직접 추가 칸이 같은 모양
 const ROW = 'grid grid-cols-[13rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-default py-1.5 max-w-4xl'
 const INPUT = 'rounded-input border border-default bg-content px-2 py-1 t-small w-full'
-const MAN = 10_000
-const fmtMan = (won: number) => `${Math.round(won / MAN).toLocaleString('ko-KR')}만 원`
 const fmtRoas = (r: number | null) => (r === null ? '계산 불가' : `${r.toFixed(2)}배`)
 
 /** 파일 선택 버튼 — 숨겨 둔 파일 입력을 버튼으로 연다. 여러 파일 선택 가능 */
@@ -73,12 +72,12 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
   const set = (k: string) => (v: string) => setVals((s) => ({ ...s, [k]: v }))
 
   const contribKeys = CONTRIBUTION_FIELDS.map((f) => f.key)
-  const calcRaw = Object.fromEntries(contribKeys.map((k) => [k, vals[`${k}Man`] ?? '']))
-  const calcError = validateContribution({ ...calcRaw, marketingSpend: vals.requestedMan ?? '' }, contribKeys)
+  const calcRaw = Object.fromEntries(contribKeys.map((k) => [k, vals[k] ?? '']))
+  const calcError = validateContribution({ ...calcRaw, marketingSpend: vals.requested ?? '' }, contribKeys)
   const result = useMemo(() => {
-    if (calcError || !(Number(vals.requestedMan) > 0)) return null
-    const n = (k: string) => Number(vals[`${k}Man`]) * MAN
-    return calcContribution({ gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'), marketingSpend: Number(vals.requestedMan) * MAN })
+    if (calcError || !(Number(vals.requested) > 0)) return null
+    const n = (k: string) => Number(vals[k])
+    return calcContribution({ gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'), marketingSpend: Number(vals.requested) })
   }, [vals, calcError])
 
   // 아직 남은 것 — 모두 채워야 제출할 수 있다
@@ -187,8 +186,8 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                   inputMode={f.type === 'number' || f.type === 'date' ? 'numeric' : undefined}
                   maxLength={f.type === 'date' ? 10 : undefined}
                   placeholder={f.type === 'date' ? 'YYYY-MM-DD (숫자만 입력)' : f.placeholder}
-                  value={vals[f.name] ?? ''}
-                  onChange={(e) => set(f.name)(f.type === 'date' ? formatDate(e.target.value) : e.target.value)}
+                  value={f.type === 'number' ? formatMoneyInput(digitsOnly(vals[f.name] ?? '')) : (vals[f.name] ?? '')}
+                  onChange={(e) => set(f.name)(f.type === 'date' ? formatDate(e.target.value) : f.type === 'number' ? digitsOnly(e.target.value) : e.target.value)}
                 />
               </label>
             ))}
@@ -230,25 +229,25 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
           </div>
 
           <div className="flex flex-col gap-2 border-t border-default pt-2">
-            <span className="t-small font-semibold">공헌이익 계산 <span className="t-caption">(모두 만 원 단위, 해당 없으면 0)</span></span>
+            <span className="t-small font-semibold">공헌이익 계산 <span className="t-caption">(모두 원 단위, 1원까지 입력, 해당 없으면 0)</span></span>
             <p className="t-caption">{CONTRIBUTION_FORMULA}</p>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {CONTRIBUTION_FIELDS.map((f) => (
                 <label key={f.key} className="flex flex-col gap-1 t-small">
                   <span>{f.label} *</span>
-                  <input className={INPUT} inputMode="decimal" placeholder={f.hint} value={vals[`${f.key}Man`] ?? ''} onChange={(e) => set(`${f.key}Man`)(e.target.value)} />
+                  <input className={INPUT} inputMode="numeric" placeholder={f.hint} value={formatMoneyInput(digitsOnly(vals[f.key] ?? ''))} onChange={(e) => set(f.key)(digitsOnly(e.target.value))} />
                 </label>
               ))}
               <div className="flex flex-col gap-1 t-small">
                 <span>마케팅 지출 <span className="t-caption">(= 요청금액, 자동)</span></span>
-                <div className={`${INPUT} bg-muted`}>{vals.requestedMan ? `${Number(vals.requestedMan).toLocaleString('ko-KR')}만 원` : '요청금액을 입력하세요'}</div>
+                <div className={`${INPUT} bg-muted`}>{vals.requested ? fmtWon(Number(vals.requested)) : '요청금액을 입력하세요'}</div>
               </div>
             </div>
             <div className="rounded-card border border-default p-2">
               {result ? (
                 <div className="flex flex-wrap gap-x-8 gap-y-1 t-small">
-                  <span>순매출 <strong>{fmtMan(result.netRevenue)}</strong></span>
-                  <span>공헌이익 <strong className={result.contributionProfit < 0 ? 'text-danger' : ''}>{fmtMan(result.contributionProfit)}</strong></span>
+                  <span>순매출 <strong>{fmtWon(result.netRevenue)}</strong></span>
+                  <span>공헌이익 <strong className={result.contributionProfit < 0 ? 'text-danger' : ''}>{fmtWon(result.contributionProfit)}</strong></span>
                   <span>실질 ROAS <strong>{fmtRoas(result.realRoas)}</strong></span>
                   <span>명목 ROAS <strong>{fmtRoas(result.nominalRoas)}</strong></span>
                   <span>반품률 <strong>{result.returnRate === null ? '-' : `${(result.returnRate * 100).toFixed(1)}%`}</strong></span>

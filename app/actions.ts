@@ -9,7 +9,7 @@ import {
 import { getEngine, roleLabel } from '@/lib/app/engine'
 import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canSubmitCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
-import { importExpansionPlans, receiveContractNotice } from '@/lib/modules/w02/intake'
+import { importExpansionPlans } from '@/lib/modules/w02/intake'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { ROLES } from '@/lib/rules/authority.rules'
@@ -123,24 +123,6 @@ export async function importPlansAction() {
     const { cfg } = await getEngine()
     const r = await importExpansionPlans(sql, cfg, user.name)
     return r.imported === 0 ? '새로 접수할 기안이 없어요.' : `확대 기안 ${r.imported}건을 접수했어요 (이미 접수된 ${r.skipped}건은 건너뜀).`
-  })
-}
-
-export async function receiveContractAction(input: {
-  influencerId: string; annualFixedFeeEok: number; notifyDeadline: string; currentExpiry: string; fixedFeePaymentDate: string; note: string
-}) {
-  return guarded(async (user, sql) => {
-    if (!canAcceptCategory(user, 'marketing_team')) throw new EngineError('마케팅 팀장 이상만 직접 접수할 수 있어요. 안건 접수 화면에서 올려 주세요.')
-    const { cfg } = await getEngine()
-    const r = await receiveContractNotice(sql, cfg, {
-      influencerId: input.influencerId.trim().toUpperCase(),
-      annualFixedFeeKrw: Math.round(input.annualFixedFeeEok * 100_000_000),
-      notifyDeadline: input.notifyDeadline.trim(),
-      currentExpiry: input.currentExpiry.trim(),
-      fixedFeePaymentDate: input.fixedFeePaymentDate.trim() || null,
-      note: input.note,
-    }, user.name)
-    return `전속계약 갱신 안건 #${r.caseId} 를 접수했어요. ${r.decision.status === 'decided' ? `승인권자: ${r.decision.authorityLabel}` : '확인이 필요한 사실이 있어요'}`
   })
 }
 

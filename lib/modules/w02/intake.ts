@@ -2,6 +2,7 @@
 //  1) 캠페인 확대 기안: 마케팅팀이 올린 기안(mkt_budget_plan_ms)을 한꺼번에 접수한다. 이미 접수한 기안은 건너뛴다.
 //  2) 전속계약 갱신 통보: 통보서의 값을 입력해 접수한다.
 import type { Sql } from 'postgres'
+import { assignDrafts } from '@/lib/app/drafts'
 import { EngineError, listCases, openCase, type EngineConfig } from '@/lib/engine/engine'
 import { fmtWon } from '@/lib/app/format'
 import { MASIL_MODEL } from '@/lib/semantic/model'
@@ -46,6 +47,7 @@ export async function importExpansionPlans(sql: Sql, cfg: EngineConfig, actorNam
       actorName,
     })
   }
+  await assignDrafts(sql)
   return { imported: fresh.length, skipped: all.length - fresh.length }
 }
 

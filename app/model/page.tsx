@@ -16,7 +16,7 @@ export default function ModelPage() {
     <AppShell>
       <div className="flex flex-col gap-3">
         <PageHeader
-          title="메트릭 (시맨틱 레이어)"
+          title="용어 사전 (시맨틱 레이어)"
           description="화면과 판단이 읽는 업무 대상·관계·측정값·지표의 정의가 이 한 곳에 있어요. 지표를 바꾸려면 여기(lib/semantic/model.ts)만 고치면 모든 화면에 반영돼요."
         />
 

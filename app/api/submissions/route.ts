@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     }
     const sub = await submitIntake(sql, { category, refId: String(form.get('refId') ?? ''), values, files, by: user.name })
     revalidatePath('/', 'layout')
-    return NextResponse.json({ ok: true, message: `${roleLabel(cat.acceptRole)}에게 보고했어요. 접수되면 안건 목록에 나타나요.`, id: sub.id })
+    return NextResponse.json({ ok: true, message: `${roleLabel(cat.acceptRole)}에게 보고했어요. 접수되면 기안 목록에 나타나요.`, id: sub.id })
   } catch (e) {
     const message = e instanceof EngineError ? e.message : `처리하지 못했어요: ${e instanceof Error ? e.message : String(e)}`
     return NextResponse.json({ ok: false, message }, { status: e instanceof EngineError ? 400 : 500 })

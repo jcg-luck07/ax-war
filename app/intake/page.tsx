@@ -21,7 +21,6 @@ import { entityRows } from '@/lib/semantic/run'
 export const dynamic = 'force-dynamic'
 
 const STATUS = { pending: { label: '접수 대기', color: 'warning' }, accepted: { label: '접수됨', color: 'success' }, returned: { label: '반려', color: 'danger' } } as const
-const man = (won: number) => `${Math.round(won / 10_000).toLocaleString('ko-KR')}만 원`
 
 export default async function IntakePage({ searchParams }: { searchParams: Promise<{ tab?: string; id?: string }> }) {
   const sp = await searchParams
@@ -169,7 +168,7 @@ async function AcceptTab({
         {f.filename} <span className="t-caption">({Math.max(1, Math.round(f.size / 1024))}KB)</span>
       </a>
     )
-    const money = (won: number) => man(won)
+    const money = (won: number) => fmtWon(won)
     // 확인할 값 옆에 바로 체크박스가 오도록, 항목마다 한 줄씩 (id 가 있는 줄이 체크 대상)
     const sections: ReviewSection[] = [
       {
@@ -178,7 +177,7 @@ async function AcceptTab({
           { id: 'ref', label: cat.refLabel, value: `${sel.refId} ${refName}${isNewRef ? ' (신규)' : ''}`, hint: chk.ref },
           ...(isNewRef ? [{ id: 'newref', label: '신규 ID 확인', value: `${sel.refId} · 이름 ${v.refName}${v.parentInfluencerId ? ` · 소속 ${v.parentInfluencerId} ${nameOf.get(v.parentInfluencerId) ?? ''}` : ''} (규칙 ${cat.idRule})`, hint: chk.newref }] : []),
           { id: 'deadline', label: '계약 체결 기한', value: `${v.contractDeadline} (${ddayText(dl)})`, hint: chk.deadline },
-          { id: 'settle', label: '결산일', value: <>{v.settlementDate}{inWin === null ? '' : inWin ? <span className="text-danger"> · 현금 하회 예상 구간 안 (승인권자가 올라가요)</span> : ' · 하회 구간 밖'}</>, hint: chk.settle },
+          { id: 'settle', label: '지급 예정일', value: <>{v.settlementDate}{inWin === null ? '' : inWin ? <span className="text-danger"> · 현금 하회 예상 구간 안 (승인권자가 올라가요)</span> : ' · 하회 구간 밖'}</>, hint: chk.settle },
           { id: 'amount', label: '요청금액', value: fmtWon(contrib.marketingSpend), hint: chk.amount },
           ...(v.currentExpiry ? [{ label: '현 계약 만료일', value: v.currentExpiry }] : []),
           { id: 'memo', label: '메모', value: v.memo || '(메모 없음)', hint: chk.memo },

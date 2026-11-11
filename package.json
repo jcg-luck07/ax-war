@@ -15,6 +15,7 @@
     "db:up": "docker compose -f docker-compose.dev.yml up -d",
     "db:down": "docker compose -f docker-compose.dev.yml down",
     "db:reset": "docker compose -f docker-compose.dev.yml down -v && docker compose -f docker-compose.dev.yml up -d",
+    "db:test-setup": "docker compose -f docker-compose.dev.yml exec -T db psql -U postgres -c \"CREATE DATABASE app_test\"",
     "db:psql": "docker compose -f docker-compose.dev.yml exec db psql -U postgres -d app",
     "check:design": "bash scripts/check-design.sh"
   },

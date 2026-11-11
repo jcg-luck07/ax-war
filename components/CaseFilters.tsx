@@ -10,7 +10,7 @@ import { formatDateInput } from '@/lib/app/date-input'
 const INPUT = 'rounded-input border border-default bg-content px-2 py-1 t-small'
 const KEYS = ['type', 'state', 'basis', 'from', 'to', 'q'] as const
 
-export function CaseFilters({ types, states }: { types: { id: string; label: string }[]; states: string[] }) {
+export function CaseFilters({ types, states }: { types: { id: string; label: string }[]; states: { value: string; label: string }[] }) {
   const router = useRouter()
   const path = usePathname()
   const sp = useSearchParams()
@@ -50,12 +50,12 @@ export function CaseFilters({ types, states }: { types: { id: string; label: str
           <label className="flex flex-col gap-1 t-caption">상태
             <select className={INPUT} value={v.state} onChange={(e) => set('state')(e.target.value)}>
               <option value="">전체</option>
-              {states.map((s) => <option key={s} value={s}>{s}</option>)}
+              {states.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
             </select>
           </label>
           <label className="flex flex-col gap-1 t-caption">날짜 기준
             <select className={INPUT} value={v.basis} onChange={(e) => set('basis')(e.target.value)}>
-              <option value="settle">결산일</option>
+              <option value="settle">지급 예정일</option>
               <option value="deadline">계약 체결 기한</option>
             </select>
           </label>

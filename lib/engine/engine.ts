@@ -530,7 +530,10 @@ export async function listPendingApprovals(sql: Sql): Promise<(ApprovalRow & { c
 
 // ───────────────────────── 초기화 (시험·점검용 — 화면에서는 부르지 않는다) ─────────────────────────
 
-/** 안건·이력·승인·작업·가정을 모두 지운다. 원본 복사본(source_rows)은 그대로 둔다. */
+/** 안건·이력·승인·작업·가정을 모두 지운다. 원본 복사본(source_rows)은 그대로 둔다.
+ *  사용자가 쓰는 DB 를 실수로 비우지 않도록, 이름이 `_test` 로 끝나는 DB 에서만 동작한다. */
 export async function resetEngineData(sql: Sql): Promise<void> {
-  await sql`TRUNCATE decision_cases, assumptions, submissions, submission_files RESTART IDENTITY CASCADE`
+  const [{ db }] = await sql`SELECT current_database() AS db`
+  if (!String(db).endsWith('_test')) throw new Error(`시험용 DB(이름이 _test 로 끝남)에서만 초기화할 수 있어요. 지금 DB: ${db}`)
+  await sql`TRUNCATE decision_cases, assumptions, submissions, submission_files, drafts RESTART IDENTITY CASCADE`
 }

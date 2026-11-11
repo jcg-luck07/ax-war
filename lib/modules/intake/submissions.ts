@@ -1,6 +1,7 @@
 // 안건 제출·접수 — 팀원이 안건을 제출(보고)하면 접수 권한자(팀장)에게 넘어가고, 팀장이 체크리스트를 모두 확인한 뒤 접수하면 안건이 된다 (서버 전용).
 // 분류(대분류)마다 제출할 수 있는 역할과 접수할 수 있는 역할이 다르다. ID 는 id_conventions.md 규칙을 따른다.
 import type { Sql } from 'postgres'
+import { assignDrafts } from '@/lib/app/drafts'
 import { EngineError, openCase, type EngineConfig } from '@/lib/engine/engine'
 import { fmtWon } from '@/lib/app/format'
 import { calcContribution, validateContribution, CONTRIBUTION_FIELDS, type ContributionInput } from '@/lib/metrics/contribution-calc'
@@ -37,7 +38,7 @@ export interface Category {
 const COMMON_FIELDS = (settleLabel: string, deadlineLabel: string, amountLabel: string): FieldDef[] => [
   { name: 'settlementDate', label: settleLabel, type: 'date', required: true },
   { name: 'contractDeadline', label: deadlineLabel, type: 'date', required: true },
-  { name: 'requestedMan', label: amountLabel, type: 'number', required: true, placeholder: '예: 3000' },
+  { name: 'requested', label: amountLabel, type: 'number', required: true, placeholder: '예: 30,000,000' },
 ]
 
 export const CATEGORIES: Category[] = [
@@ -45,14 +46,14 @@ export const CATEGORIES: Category[] = [
     id: 'influencer', label: CATEGORY_LABEL.influencer, refLabel: '인플루언서 ID', idRule: 'INF-nnn', idPattern: /^INF-\d{3}$/,
     submitRoles: ['marketing_member', 'marketing_team'], acceptRole: 'marketing_team',
     fields: [
-      ...COMMON_FIELDS('결산일 (고정 피 지급 예정일)', '계약 체결 기한 (갱신 통보 기한)', '요청금액 (연 고정 피, 만 원)'),
+      ...COMMON_FIELDS('지급 예정일 (고정 피)', '계약 체결 기한 (갱신 통보 기한)', '요청금액 (연 고정 피, 원)'),
       { name: 'currentExpiry', label: '현 계약 만료일', type: 'date', required: true },
     ],
   },
   {
     id: 'campaign', label: CATEGORY_LABEL.campaign, refLabel: '캠페인 ID', idRule: 'CMP-nnnn', idPattern: /^CMP-\d{4}$/,
     submitRoles: ['marketing_member', 'marketing_team'], acceptRole: 'marketing_team',
-    fields: COMMON_FIELDS('결산일 (집행·지급 예정일)', '계약 체결 기한 (계약 확정기한)', '요청금액 (집행 예산, 만 원)'),
+    fields: COMMON_FIELDS('지급 예정일 (집행 대금)', '계약 체결 기한 (계약 확정기한)', '요청금액 (집행 예산, 원)'),
   },
 ]
 
@@ -78,7 +79,7 @@ export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'ne
   { id: 'ref', label: '분류 ID가 맞고, 안건 내용이 그 대상(인플루언서·캠페인)에 대한 것이다' },
   { id: 'newref', label: '신규 ID: 전사 ID 규칙에 맞고, 이름(·소속 인플루언서)이 맞으며, 기존 ID와 겹치지 않는다', only: 'new' },
   { id: 'deadline', label: '계약 체결 기한을 확인했고, 남은 기간 안에 승인까지 끝낼 수 있다' },
-  { id: 'settle', label: '결산일(돈이 나가는 날)이 기안서와 일치한다' },
+  { id: 'settle', label: '지급 예정일(돈이 나가는 날)이 기안서와 일치한다' },
   { id: 'amount', label: '요청금액이 기안서·추계서와 일치한다' },
   { id: 'calc', label: '공헌이익 계산 입력값을 추계서와 대조했고, 결과(양수·음수)를 확인했다' },
   { id: 'dup', label: '같은 대상으로 이미 진행 중인 안건이 없다' },
@@ -141,12 +142,11 @@ export async function getFile(sql: Sql, id: number): Promise<(FileMeta & { conte
 }
 
 const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s))
-const MAN = 10_000
 const CONTRIB_KEYS = CONTRIBUTION_FIELDS.map((f) => f.key)
 
 /** 제출한 칸에서 공헌이익 입력(원 단위)을 만든다 */
 export function contributionFromInput(input: Record<string, string>): ContributionInput {
-  const n = (k: string) => Math.round(Number(input[`${k}Man`] ?? 0) * MAN)
+  const n = (k: string) => Math.round(Number(input[k] ?? 0))
   return {
     gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'),
     marketingSpend: n('requested'),
@@ -176,18 +176,18 @@ export async function submitIntake(
   for (const f of cat.fields) {
     // 신규 인플루언서는 아직 계약이 없어 현 계약 만료일이 없다
     if (f.name === 'currentExpiry' && isNew) { v.currentExpiry = ''; continue }
-    const val = (input.values[f.name] ?? '').trim()
+    const val = (input.values[f.name] ?? '').trim().replace(f.type === 'number' ? /,/g : /^$/, '')
     if (f.required && !val) throw new EngineError(`${f.label} 을(를) 입력해 주세요`)
     if (val && f.type === 'date' && !isDate(val)) throw new EngineError(`${f.label} 은(는) YYYY-MM-DD 형식으로 입력해 주세요`)
-    if (val && f.type === 'number' && !(Number(val) > 0)) throw new EngineError(`${f.label} 은(는) 0보다 큰 숫자여야 해요`)
+    if (val && f.type === 'number' && !(Number.isInteger(Number(val)) && Number(val) > 0)) throw new EngineError(`${f.label} 은(는) 0보다 큰 정수(원)여야 해요`)
     v[f.name] = val
   }
   v.memo = (input.values.memo ?? '').trim()
-  // 공헌이익 칸 (만 원) — 요청금액은 마케팅 지출로 자동 들어간다
+  // 공헌이익 칸 (원, 1원 단위) — 요청금액은 마케팅 지출로 자동 들어간다
   const rawContrib: Record<string, string> = {}
   for (const k of CONTRIB_KEYS) {
-    v[`${k}Man`] = (input.values[`${k}Man`] ?? '').trim()
-    rawContrib[k] = v[`${k}Man`]
+    v[k] = (input.values[k] ?? '').replace(/,/g, '').trim()
+    rawContrib[k] = v[k]
   }
   const bad = validateContribution(rawContrib, CONTRIB_KEYS)
   if (bad) throw new EngineError(bad)
@@ -237,7 +237,7 @@ export async function submitIntake(
     if (!c) throw new EngineError(`캠페인 ${refId} 를 찾을 수 없어요 (새로 등록하려면 "신규 ID 입력"을 고르세요)`)
     name = `${c.campaign_name}(${refId})`
   }
-  const title = cat.id === 'influencer' ? `${name} ${isNew ? '신규 전속계약 체결' : '전속계약 갱신'} — 연 ${Number(v.requestedMan).toLocaleString('ko-KR')}만 원${isNew ? ' [신규 ID]' : ''}` : `${name} 집행 — ${Number(v.requestedMan).toLocaleString('ko-KR')}만 원${isNew ? ' [신규 ID]' : ''}`
+  const title = cat.id === 'influencer' ? `${name} ${isNew ? '신규 전속계약 체결' : '전속계약 갱신'} — 연 ${Number(v.requested).toLocaleString('ko-KR')}원${isNew ? ' [신규 ID]' : ''}` : `${name} 집행 — ${Number(v.requested).toLocaleString('ko-KR')}원${isNew ? ' [신규 ID]' : ''}`
 
   return (await sql.begin(async (tx) => {
     const t = tx as unknown as Sql
@@ -289,7 +289,7 @@ export async function acceptSubmission(
   let res: { caseId: number; decision: { status: string; authorityLabel: string | null } }
   if (s.category === 'influencer') {
     res = await receiveContractNotice(sql, cfg, {
-      influencerId: s.refId, annualFixedFeeKrw: Math.round(Number(v.requestedMan) * MAN), notifyDeadline: v.contractDeadline,
+      influencerId: s.refId, annualFixedFeeKrw: Math.round(Number(v.requested)), notifyDeadline: v.contractDeadline,
       currentExpiry: v.currentExpiry || null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
       newInfluencerName: v.isNewRef === '1' ? v.refName : undefined,
     }, by)
@@ -297,7 +297,7 @@ export async function acceptSubmission(
     const camp = (await entityRows(sql, MASIL_MODEL, 'campaign')).find((c) => c.campaign_id === s.refId)
     const campName = camp ? String(camp.campaign_name) : v.isNewRef === '1' ? v.refName : s.refId
     const parentInfl = camp ? String(camp.influencer_id) : v.parentInfluencerId || 'NONE'
-    const amount = Math.round(Number(v.requestedMan) * MAN)
+    const amount = Math.round(Number(v.requested))
     res = await openCase(sql, cfg, {
       caseType: EXPANSION_CASE_TYPE,
       title: `SUB-${s.id} ${campName} 집행 — 요청 ${fmtWon(amount)}${v.isNewRef === '1' ? ' [신규 ID]' : ''}`,
@@ -314,6 +314,7 @@ export async function acceptSubmission(
   }
   await sql`UPDATE decision_cases SET payload = payload || ${sql.json({ submission } as never)} WHERE id = ${res.caseId}`
   await sql`UPDATE submissions SET status = 'accepted', decided_by = ${by}, decided_at = now(), case_id = ${res.caseId} WHERE id = ${id}`
+  await assignDrafts(sql) // 접수된 안건은 새 기안 하나에 들어간다
   return { caseId: res.caseId, authorityLabel: res.decision.authorityLabel, needInfo: res.decision.status !== 'decided' }
 }
 

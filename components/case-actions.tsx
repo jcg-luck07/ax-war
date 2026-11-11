@@ -6,7 +6,7 @@ import { useState, useTransition } from 'react'
 import { Button, Checkbox, Input, Label, Radio, RadioGroup, TextField, toast } from '@heroui/react'
 import type { Outcome } from '@/lib/engine/engine'
 import {
-  bulkReplyAction, completeTaskAction, decideAction, importPlansAction, provideInfoAction, receiveContractAction, removeUserAction,
+  bulkReplyAction, completeTaskAction, decideAction, importPlansAction, provideInfoAction, removeUserAction,
   resubmitAction, setUserRolesAction, updateFactAction, type ActionResult,
 } from '@/app/actions'
 
@@ -144,7 +144,7 @@ export function FactChangeForm({
   if (!allowed) return null
   const submit = () => {
     if (!v) return toast.danger('바꿀 값을 입력해 주세요.')
-    const value: Scalar = fact.endsWith('_krw') ? Math.round(Number(v) * unitMultiplier) : v
+    const value: Scalar = fact.endsWith('_krw') ? Math.round(Number(v.replace(/,/g, '')) * unitMultiplier) : v
     if (typeof value === 'number' && !Number.isFinite(value)) return toast.danger('숫자로 입력해 주세요.')
     run(() => updateFactAction({ caseId, fact, value, reason: reason || `${label} 변경` }), () => { setV(''); setReason('') })
   }
@@ -191,40 +191,6 @@ export function ImportPlansButton({ fresh }: { fresh: number }) {
     <Button isDisabled={pending || fresh === 0} onPress={() => run(() => importPlansAction())}>
       {fresh === 0 ? '새로 접수할 기안이 없어요' : `새 기안 ${fresh}건 접수`}
     </Button>
-  )
-}
-
-export interface ContractDefaults {
-  influencerId: string
-  annualFixedFeeEok: string
-  notifyDeadline: string
-  currentExpiry: string
-}
-
-export function ContractNoticeForm({ defaults }: { defaults: ContractDefaults }) {
-  const { pending, run } = useRun()
-  const [f, setF] = useState({ ...defaults, fixedFeePaymentDate: '', note: '' })
-  const set = (k: keyof typeof f) => (v: string) => setF((s) => ({ ...s, [k]: v }))
-  const field = (k: keyof typeof f, label: string, placeholder = '') => (
-    <TextField value={f[k]} onChange={set(k)} aria-label={label}>
-      <Label>{label}</Label>
-      <Input placeholder={placeholder} />
-    </TextField>
-  )
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      {field('influencerId', '인플루언서 번호', '예: INF-001')}
-      {field('annualFixedFeeEok', '연 고정 피 (억 원)', '예: 28')}
-      {field('notifyDeadline', '해지·조건변경 통보 기한', 'YYYY-MM-DD')}
-      {field('currentExpiry', '현 계약 만료일', 'YYYY-MM-DD')}
-      {field('fixedFeePaymentDate', '고정 피 지급일 (모르면 비워 두세요)', 'YYYY-MM-DD')}
-      {field('note', '메모 (선택)')}
-      <div className="sm:col-span-2">
-        <Button isDisabled={pending} onPress={() => run(() => receiveContractAction({ ...f, annualFixedFeeEok: Number(f.annualFixedFeeEok) }))}>
-          전속계약 갱신 안건 접수
-        </Button>
-      </div>
-    </div>
   )
 }
 

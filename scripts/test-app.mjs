@@ -162,6 +162,31 @@ try {
     }
   })
 
+  await t('목록 상태: 재무팀 검토 필요 → 계약 담당 확인 필요 → 승인 필요 → 후속 작업 → 완료, 부결이면 재검토, 모두 7가지 안에서만 나온다', async () => {
+    const { stateText, STATES } = await import('@/lib/process/status')
+    const mkCase = (extra) => receiveContractNotice(sql, cfg, { annualFixedFeeKrw: 2_800_000_000, currentExpiry: '2026-09-30', note: '', linkedToGroup300: false, fixedFeePaymentDate: '2026-09-15', ...extra }, '시험')
+    const bases = new Set()
+    const stateOf = async (id) => { const v = await view(id); const def = flowForCaseType(v.case.caseType); const st = deriveFlowState(def, v); const pend = v.approvals.find((a) => a.status === 'pending'); const r = stateText(def, st, v.case.status, pend ? 'CEO/이사회' : '승인권자'); bases.add(r.base); return r }
+    const a = await mkCase({ influencerId: 'INF-006', notifyDeadline: '2026-07-27' })
+    assert.equal((await stateOf(a.caseId)).base, '재무팀 검토 필요')
+    const gate = (await view(a.caseId)).tasks.filter((x) => x.detail.gate === 'pre-approval')
+    await E.completeTask(sql, gate.find((x) => x.detail.key === 'collect-performance').id, '재무')
+    assert.equal((await stateOf(a.caseId)).base, '계약 담당 확인 필요')
+    await E.completeTask(sql, gate.find((x) => x.detail.key === 'confirm-terms').id, '계약 담당')
+    const ap = await stateOf(a.caseId); assert.equal(ap.base, '승인 필요'); assert.equal(ap.text, '승인 필요 · CEO/이사회')
+    const approval = (await view(a.caseId)).approvals.find((x) => x.status === 'pending')
+    await E.decide(sql, cfg, approval.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
+    const fu = await stateOf(a.caseId); assert.equal(fu.base, '후속 작업'); assert.match(fu.text, /^후속 작업 · /)
+    for (const task of (await view(a.caseId)).tasks.filter((x) => x.status === 'open')) await E.completeTask(sql, task.id, '담당')
+    assert.equal((await stateOf(a.caseId)).base, '완료')
+    const b = await mkCase({ influencerId: 'INF-008', notifyDeadline: '2026-07-28' })
+    for (const task of (await view(b.caseId)).tasks.filter((x) => x.detail.gate === 'pre-approval')) await E.completeTask(sql, task.id, '시험')
+    const ap2 = (await view(b.caseId)).approvals.find((x) => x.status === 'pending')
+    await E.decide(sql, cfg, ap2.id, { outcome: 'rejected', byRole: 'ceo_board', byName: '강세연' })
+    assert.equal((await stateOf(b.caseId)).base, '재검토')
+    for (const x of bases) assert.ok(STATES.some((y) => y.base === x), `7가지 밖의 상태: ${x}`)
+  })
+
   console.log(`\n${n}개 시험 모두 통과`)
 } finally {
   await sql.end()

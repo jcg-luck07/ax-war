@@ -18,8 +18,8 @@ const user = (roles) => ({ authenticated: true, email: 'x', name: 'x', roles, is
 const doc = (kind, name = `${kind}.txt`) => ({ kind, filename: name, mime: 'text/plain', content: Buffer.from(`시험 ${kind}`) })
 const REQUIRED_FILES = ['draft', 'estimate'].map((k) => doc(k))
 const custom = (label, name = `${label}.txt`) => ({ ...doc('custom', name), label })
-const CONTRIB = { gmvMan: '10000', refundMan: '1000', cogsMan: '3000', channelFeeMan: '700', shippingMan: '400', returnLogisticsMan: '100' }
-const campaignValues = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-10', requestedMan: '1500', memo: '시험', ...CONTRIB, ...over })
+const CONTRIB = { gmv: '100000000', refund: '10000000', cogs: '30000000', channelFee: '7000000', shipping: '4000000', returnLogistics: '1000000' }
+const campaignValues = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-10', requested: '15000000', memo: '시험', ...CONTRIB, ...over })
 // 접수할 때 확인해야 하는 모든 항목 (체크리스트 + 파일마다 하나씩)
 const allChecks = async (id, category, isNew = false) => [...checksFor(category, isNew).map((c) => c.id), ...(await listFiles(sql, id)).map((f) => fileCheckId(f.id))]
 const submit = (over = {}) => submitIntake(sql, { category: 'campaign', refId: 'CMP-0004', values: campaignValues(), files: REQUIRED_FILES, by: '마케팅 팀원', ...over })
@@ -59,8 +59,8 @@ try {
     await assert.rejects(() => submit({ refId: 'CMP-1' }), /형식/)
     await assert.rejects(() => submit({ refId: 'CMP-9999' }), /찾을 수 없어요/)
     await assert.rejects(() => submit({ values: campaignValues({ contractDeadline: '7월 10일' }) }), /YYYY-MM-DD/)
-    await assert.rejects(() => submit({ values: campaignValues({ cogsMan: '' }) }), /모두 채워/)
-    await assert.rejects(() => submit({ values: campaignValues({ requestedMan: '0' }) }), /0보다/)
+    await assert.rejects(() => submit({ values: campaignValues({ cogs: '' }) }), /모두 채워/)
+    await assert.rejects(() => submit({ values: campaignValues({ requested: '0' }) }), /0보다/)
     await assert.rejects(() => submit({ files: [...REQUIRED_FILES, doc('draft', 'run.exe')] }), /형식/)
     await assert.rejects(() => submit({ files: [...REQUIRED_FILES, custom('', 'a.txt')] }), /종류 이름/)
     await assert.rejects(() => submit({ files: [...REQUIRED_FILES, custom('가'.repeat(31), 'a.txt')] }), /30자/)
@@ -98,7 +98,7 @@ try {
   })
   await t('전속계약 접수: 인플루언서 제출은 계약 안건이 되고 현 계약 만료일이 필요하다 (인플루언서 계약만 체크리스트에 계약서·조건 확인 항목이 있다)', async () => {
     assert.ok(checksFor('influencer').some((c) => c.id === 'terms')); assert.ok(!checksFor('campaign').some((c) => c.id === 'terms'))
-    const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-22', requestedMan: '80000', currentExpiry: '2026-09-30', memo: '시험', ...CONTRIB }
+    const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-22', requested: '800000000', currentExpiry: '2026-09-30', memo: '시험', ...CONTRIB }
     await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...values, currentExpiry: '' }, files: REQUIRED_FILES, by: '팀원' }), /현 계약 만료일/)
     const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values, files: [...REQUIRED_FILES, doc('contract')], by: '팀원' })
     const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
@@ -114,7 +114,7 @@ try {
     await assert.rejects(() => acceptSubmission(sql, cfg, s.id, '팀장', again), /이미 처리/)
   })
   await t('신규 ID: 원본에 없는 인플루언서·캠페인 ID 로 제출·접수할 수 있고, 이름·형식·중복을 검사한다', async () => {
-    const inf = (over = {}) => ({ settlementDate: '2026-09-15', contractDeadline: '2026-07-26', requestedMan: '30000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새별', ...over })
+    const inf = (over = {}) => ({ settlementDate: '2026-09-15', contractDeadline: '2026-07-26', requested: '300000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새별', ...over })
     const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go(inf({ refName: '' })), /이름/)
     await assert.rejects(() => go(inf(), 'INF-1'), /형식/)
@@ -133,7 +133,7 @@ try {
     assert.equal(v.case.payload.submission.newRef.name, '새별'); assert.equal(v.case.authority, 'masil_ceo', '3억(10억 이하)·지급일 구간 밖 → Masil 대표')
   })
   await t('신규 캠페인 ID: 소속 인플루언서(기존 또는 NONE)가 필요하고, 안건에 소속이 남는다', async () => {
-    const base = { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requestedMan: '500', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새 캠페인' }
+    const base = { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새 캠페인' }
     const go = (values) => submitIntake(sql, { category: 'campaign', refId: 'CMP-0026', values, files: REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-999' }), /소속 인플루언서/)
     const s = await go({ ...base, parentInfluencerId: 'INF-002' })

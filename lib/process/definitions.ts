@@ -8,7 +8,7 @@ import { CATEGORY_LABEL } from '@/lib/app/labels'
 
 const CONTRACT_LANES = [
   { id: 'marketing', label: '마케팅' },
-  { id: 'finance', label: '재무' },
+  { id: 'finance', label: '재무팀' },
   { id: 'contract', label: '계약 담당' },
   { id: 'approver', label: '승인권자' },
 ]

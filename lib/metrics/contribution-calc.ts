@@ -31,7 +31,7 @@ export interface ContributionResult {
   returnRate: number | null
 }
 
-/** 입력 칸 정의 — 화면이 이 순서로 칸을 그린다 (단위: 만 원) */
+/** 입력 칸 정의 — 화면이 이 순서로 칸을 그린다 (단위: 원, 1원 단위까지) */
 export const CONTRIBUTION_FIELDS: { key: Exclude<keyof ContributionInput, 'marketingSpend'>; label: string; hint: string }[] = [
   { key: 'gmv', label: '예상 GMV', hint: '이 집행·계약으로 기대하는 총 주문금액' },
   { key: 'refund', label: '예상 반품 환불액', hint: '예상 GMV 중 환불될 것으로 보는 금액' },
@@ -61,7 +61,7 @@ export function validateContribution(raw: Partial<Record<keyof ContributionInput
   for (const k of keys) {
     const v = (raw[k] ?? '').trim()
     if (v === '') return '공헌이익 계산 칸을 모두 채워 주세요 (해당 없으면 0)'
-    if (!Number.isFinite(Number(v)) || Number(v) < 0) return '공헌이익 계산 칸에는 0 이상의 숫자를 넣어 주세요'
+    if (!Number.isInteger(Number(v)) || Number(v) < 0) return '공헌이익 계산 칸에는 0 이상의 정수(원)를 넣어 주세요'
   }
   if (Number(raw.refund) > Number(raw.gmv)) return '예상 반품 환불액이 예상 GMV 보다 클 수 없어요'
   return null

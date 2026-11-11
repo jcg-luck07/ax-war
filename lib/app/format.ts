@@ -1,14 +1,10 @@
 // 화면 표시용 서식·라벨 (순수 함수 · 서버/브라우저 어디서나 import 가능). 영어 상태값은 화면에 보이지 않는다.
 import { CASE_TYPE_CATEGORY, caseTypeLabel } from './labels'
 
-/** 금액: 28억 원 / 6,131만 원 / 950원 (음수는 − 표시) */
+/** 금액: 줄이지 않고 1원 단위까지 모두 쓴다. 예: 2,800,000,000원 / −61,308,789원 */
 export function fmtWon(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return '—'
-  const sign = n < 0 ? '−' : ''
-  const a = Math.abs(n)
-  if (a >= 100_000_000) return `${sign}${(Math.round(a / 1_000_000) / 100).toLocaleString('ko-KR')}억 원`
-  if (a >= 10_000) return `${sign}${Math.round(a / 10_000).toLocaleString('ko-KR')}만 원`
-  return `${sign}${Math.round(a).toLocaleString('ko-KR')}원`
+  return `${n < 0 ? '−' : ''}${Math.round(Math.abs(n)).toLocaleString('ko-KR')}원`
 }
 
 /** 비율 0.406 → 40.6% */
