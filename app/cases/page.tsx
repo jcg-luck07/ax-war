@@ -27,7 +27,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-10">
+      <div className="flex flex-col gap-3">
         <PageHeader title="안건" description="결정이 필요한 일을 마감이 빠른 순서로 보여 줘요. 행을 누르면 근거와 다음 행동이 나와요." />
         <Card>
           <Card.Header>

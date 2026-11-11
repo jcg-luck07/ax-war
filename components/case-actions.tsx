@@ -7,7 +7,7 @@ import { Button, Checkbox, Input, Label, Radio, RadioGroup, TextField, toast } f
 import type { Outcome } from '@/lib/engine/engine'
 import {
   bulkReplyAction, completeTaskAction, decideAction, importPlansAction, provideInfoAction, receiveContractAction, removeUserAction,
-  requestPurchaseAction, resubmitAction, setUserRolesAction, updateFactAction, type ActionResult,
+  resubmitAction, setUserRolesAction, updateFactAction, type ActionResult,
 } from '@/app/actions'
 
 type Scalar = string | number | boolean | null
@@ -228,32 +228,6 @@ export function ContractNoticeForm({ defaults }: { defaults: ContractDefaults })
   )
 }
 
-export function PurchaseRequestForm() {
-  const { pending, run } = useRun()
-  const [f, setF] = useState({ title: '', skuId: '', amountMan: '', paymentDueDate: '' })
-  const set = (k: keyof typeof f) => (v: string) => setF((s) => ({ ...s, [k]: v }))
-  const field = (k: keyof typeof f, label: string, placeholder = '') => (
-    <TextField value={f[k]} onChange={set(k)} aria-label={label}>
-      <Label>{label}</Label>
-      <Input placeholder={placeholder} />
-    </TextField>
-  )
-  return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      {field('title', '발주 내용', '예: 더마 세럼 추가 발주')}
-      {field('skuId', 'SKU (선택)', '예: SKU-1001')}
-      {field('amountMan', '발주 금액 (만 원)', '예: 5000')}
-      {field('paymentDueDate', '대금 지급 예정일 (모르면 비워 두세요)', 'YYYY-MM-DD')}
-      <div className="sm:col-span-2">
-        <Button isDisabled={pending} onPress={() => run(() => requestPurchaseAction({ ...f, amountMan: Number(f.amountMan) }), () => setF({ title: '', skuId: '', amountMan: '', paymentDueDate: '' }))}>
-          발주 승인 요청 접수
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-// ── 사용자·권한 (관리자) ──
 export function UserRoleForm({ roles, initial }: { roles: { id: string; label: string }[]; initial?: { email: string; name: string; roles: string[] } }) {
   const { pending, run } = useRun()
   const [email, setEmail] = useState(initial?.email ?? '')

@@ -19,7 +19,7 @@ export default async function FlowPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-10">
+      <div className="flex flex-col gap-3">
         <PageHeader
           title="업무 흐름"
           description="안건이 어느 부서(가로 줄)에서 어떤 단계를 거쳐 누구의 결정으로 이어지는지 BPMN 방식으로 보여 줘요. 파란 숫자는 그 단계에서 지금 기다리는 안건 수예요."
@@ -35,13 +35,13 @@ export default async function FlowPage() {
                 <Card.Title>{def.title}</Card.Title>
                 <Card.Description>{def.description} · 안건 {mine.length}건</Card.Description>
               </Card.Header>
-              <Card.Content className="flex flex-col gap-6">
+              <Card.Content className="flex flex-col gap-3">
                 <FlowDiagram def={def} counts={counts} laneLabels={{ approver: '승인권자 (규칙집이 판정)' }} uid={`flow-${def.id}`} />
                 {waiting.length > 0 && (
                   <div className="flex flex-col gap-2">
                     <p className="t-small font-semibold">지금 기다리는 안건</p>
                     {waiting.map(({ v, s }) => (
-                      <Link key={v.case.id} href={`/cases/${v.case.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-default p-3">
+                      <Link key={v.case.id} href={`/cases/${v.case.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-default p-2">
                         <span className="t-small">{v.case.title}</span>
                         <span className="flex items-center gap-2">
                           <span className="t-caption">

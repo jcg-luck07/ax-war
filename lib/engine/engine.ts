@@ -241,8 +241,12 @@ const FINAL: CaseStatus[] = ['approved', 'rejected', 'closed']
 async function createTasks(sql: Sql, caseId: number, specs: TaskSpec[], actor: { kind: ActorKind; name: string | null }) {
   const ids: number[] = []
   for (const s of specs) {
-    const dup = await sql`SELECT 1 FROM tasks WHERE case_id = ${caseId} AND detail->>'key' = ${s.key} AND status = 'open' LIMIT 1`
-    if (dup.length > 0) continue // 같은 열쇠의 열린 작업이 있으면 만들지 않는다
+    // 같은 열쇠의 열린 작업이 있으면 만들지 않는다. detail.once 인 작업은 끝난 뒤에도(재평가해도) 다시 만들지 않는다.
+    const once = s.detail?.once === true
+    const dup = once
+      ? await sql`SELECT 1 FROM tasks WHERE case_id = ${caseId} AND detail->>'key' = ${s.key} LIMIT 1`
+      : await sql`SELECT 1 FROM tasks WHERE case_id = ${caseId} AND detail->>'key' = ${s.key} AND status = 'open' LIMIT 1`
+    if (dup.length > 0) continue
     const detail = { ...(s.detail ?? {}), key: s.key }
     const r = await sql`
       INSERT INTO tasks (case_id, task_type, title, assignee_role, due_date, detail, data_origin)
@@ -437,6 +441,9 @@ export async function decide(
         `권한이 부족해요: 이 건은 ${cfg.roleLabel(ap.requiredRole)} 승인이 필요한데 ${cfg.roleLabel(input.byRole)} 입니다`,
       )
     }
+    // 승인 전에 끝나야 하는 앞 단계(detail.gate = 'pre-approval')가 열려 있으면 결정할 수 없다
+    const gate = await t`SELECT title FROM tasks WHERE case_id = ${ap.caseId} AND status = 'open' AND detail->>'gate' = 'pre-approval' ORDER BY id`
+    if (gate.length > 0) throw new EngineError(`앞 단계가 끝나야 결정할 수 있어요: ${gate.map((g) => g.title).join(', ')}`)
     const c = await loadCase(t, ap.caseId, true)
     const status = input.outcome === 'approved' ? 'approved' : input.outcome === 'rejected' ? 'rejected' : 'on_hold'
     await t`
@@ -484,6 +491,11 @@ export async function completeTask(sql: Sql, taskId: number, by: string): Promis
     const task = toTask(rows[0])
     if (task.taskType === 'info_request') throw new EngineError('확인 요청은 회신으로만 처리할 수 있어요')
     if (task.status !== 'open') throw new EngineError('이미 처리된 작업이에요')
+    const after = task.detail.after ? String(task.detail.after) : null
+    if (after) {
+      const prev = await t`SELECT title FROM tasks WHERE case_id = ${task.caseId} AND status = 'open' AND detail->>'key' = ${after} LIMIT 1`
+      if (prev.length > 0) throw new EngineError(`앞 단계가 먼저 끝나야 해요: ${prev[0].title}`)
+    }
     await t`UPDATE tasks SET status = 'done', completed_at = now() WHERE id = ${taskId}`
     await logEvent(t, task.caseId, 'task_done', '사람', by, { taskId, title: task.title })
     const c = await loadCase(t, task.caseId, true)
@@ -520,5 +532,5 @@ export async function listPendingApprovals(sql: Sql): Promise<(ApprovalRow & { c
 
 /** 안건·이력·승인·작업·가정을 모두 지운다. 원본 복사본(source_rows)은 그대로 둔다. */
 export async function resetEngineData(sql: Sql): Promise<void> {
-  await sql`TRUNCATE decision_cases, assumptions RESTART IDENTITY CASCADE`
+  await sql`TRUNCATE decision_cases, assumptions, submissions, submission_files RESTART IDENTITY CASCADE`
 }

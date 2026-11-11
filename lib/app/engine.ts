@@ -8,7 +8,6 @@ import { AUTHORITY_RULES, ROLES } from '@/lib/rules/authority.rules'
 import { simulateCash, DEFAULT_CASH_OPTIONS, type CashResult } from '@/lib/modules/cash/simulate'
 import { loadCashInputs } from '@/lib/modules/cash/service'
 import { makeW02Handlers, type W02Ctx } from '@/lib/modules/w02/handlers'
-import { w01Handlers } from '@/lib/modules/w01/handlers'
 
 /** 가상기업 기준일 (data_dictionary.md) */
 export const AS_OF = '2026-07-01'
@@ -43,7 +42,7 @@ export async function getEngine(): Promise<AppEngine> {
     decide,
     roleRank,
     roleLabel,
-    handlers: { ...makeW02Handlers({ decide, roleLabel }), ...w01Handlers },
+    handlers: { ...makeW02Handlers({ decide, roleLabel }) },
     ctx,
   }
   return { sql, cfg, cash }

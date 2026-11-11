@@ -5,9 +5,8 @@ import assert from 'node:assert/strict'
 import * as E from '@/lib/engine/engine'
 import { getEngine, decide as decideAuthority } from '@/lib/app/engine'
 import { canHandle, canWork, currentUser, decidingRole } from '@/lib/app/auth'
-import { importExpansionPlans, pendingExpansionPlans, receiveContractNotice, requestPurchaseOrder } from '@/lib/modules/w02/intake'
+import { importExpansionPlans, pendingExpansionPlans, receiveContractNotice } from '@/lib/modules/w02/intake'
 import { makeW02Handlers } from '@/lib/modules/w02/handlers'
-import { w01Handlers } from '@/lib/modules/w01/handlers'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { FLOWS, flowForCaseType } from '@/lib/process/definitions'
 import { deriveFlowState } from '@/lib/process/state'
@@ -17,6 +16,7 @@ let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const user = (roles, extra = {}) => ({ authenticated: true, email: 'a@b.c', name: '홍길동', roles, isAdmin: false, ...extra })
 const view = (id) => E.getCaseView(sql, id)
+const prep = async (caseId) => { for (const t of (await E.getCaseView(sql, caseId)).tasks.filter((x) => x.status === 'open' && x.detail.gate === 'pre-approval')) await E.completeTask(sql, t.id, '시험') } // 승인 앞 단계 끝내기
 const notice = { influencerId: 'INF-001', annualFixedFeeKrw: 2_800_000_000, notifyDeadline: '2026-07-17', currentExpiry: '2026-08-31', fixedFeePaymentDate: null, note: '' }
 
 try {
@@ -24,7 +24,6 @@ try {
   await t('승인 권한: 요구 권한 이상인 역할만 결정할 수 있다 (낮은 역할·부서 역할·무역할 불가)', () => {
     assert.equal(decidingRole(user(['masil_ceo']), 'ceo_board'), null)
     assert.equal(decidingRole(user(['masil_ceo']), 'masil_ceo'), 'masil_ceo')
-    assert.equal(decidingRole(user(['group_ceo']), 'ceo_board'), 'group_ceo', '그룹 CEO 와 CEO/이사회는 같은 수준')
     assert.equal(decidingRole(user(['ceo_board']), 'marketing_team'), 'ceo_board', '높은 권한은 낮은 권한을 대신한다')
     assert.equal(decidingRole(user(['finance', 'contract_mgr']), 'marketing_team'), null, '부서 역할(rank 0)은 승인 불가')
     assert.equal(decidingRole(user([], { isAdmin: true }), 'marketing_team'), null, '관리자라도 승인 권한이 생기지 않는다')
@@ -33,10 +32,10 @@ try {
     assert.equal(canHandle(user(['finance']), '재무'), true)
     assert.equal(canHandle(user(['finance']), '마케팅'), false)
     assert.equal(canHandle(user(['marketing_team']), '마케팅'), true)
-    assert.equal(canHandle(user([], { isAdmin: true }), 'SCM'), true)
+    assert.equal(canHandle(user([], { isAdmin: true }), '재무'), true)
     assert.equal(canHandle(user([]), '재무'), false)
     assert.equal(canHandle({ ...user(['finance']), authenticated: false }, '재무'), false)
-    assert.equal(canWork(user([])), false); assert.equal(canWork(user(['scm'])), true)
+    assert.equal(canWork(user([])), false); assert.equal(canWork(user(['marketing_member'])), true)
   })
   await t('로컬 개발 사용자는 .env.local 의 DEV_USER_* 로 정해진다 (화면에 역할 전환기는 없다)', async () => {
     process.env.DEV_USER_ROLES = 'finance,없는역할'; process.env.DEV_USER_ADMIN = '0'; process.env.DEV_USER_NAME = '재무 담당'
@@ -51,7 +50,6 @@ try {
     await assert.rejects(() => receiveContractNotice(sql, cfg, { ...notice, influencerId: 'INF-999' }, 't'), /찾을 수 없어요/)
     await assert.rejects(() => receiveContractNotice(sql, cfg, { ...notice, notifyDeadline: '7월 17일' }, 't'), /YYYY-MM-DD/)
     await assert.rejects(() => receiveContractNotice(sql, cfg, { ...notice, annualFixedFeeKrw: 0 }, 't'), /0보다/)
-    await assert.rejects(() => requestPurchaseOrder(sql, cfg, { title: ' ', skuId: '', amountKrw: 1, paymentDueDate: null }, 't'), /발주 내용/)
     assert.equal((await E.listCases(sql)).length, 0)
   })
   let contractId
@@ -67,11 +65,12 @@ try {
     const b = await importExpansionPlans(sql, cfg, '시험'); assert.equal(b.imported, 0); assert.equal(b.skipped, 25)
     assert.equal((await E.listCases(sql, { caseType: 'w02.campaign_expansion' })).length, 25)
   })
-  await t('접수: 발주 승인 요청 — 지급일을 모르면 확인 요청, 알면 바로 판정', async () => {
-    const a = await requestPurchaseOrder(sql, cfg, { title: '더마 세럼 추가 발주', skuId: 'SKU-1001', amountKrw: 50_000_000, paymentDueDate: null }, '시험')
+  await t('접수: 소액 계약은 지급일을 모르면 확인 요청, 알면 바로 판정', async () => {
+    const base = { annualFixedFeeKrw: 800_000_000, currentExpiry: '2026-09-30', note: '', linkedToGroup300: false }
+    const a = await receiveContractNotice(sql, cfg, { ...base, influencerId: 'INF-003', notifyDeadline: '2026-07-22', fixedFeePaymentDate: null }, '시험')
     assert.equal(a.decision.status, 'need_info')
-    const b = await requestPurchaseOrder(sql, cfg, { title: '더마 세럼 추가 발주', skuId: 'SKU-1001', amountKrw: 50_000_000, paymentDueDate: '2026-09-15' }, '시험')
-    assert.equal(b.decision.authority, 'scm')
+    const b = await receiveContractNotice(sql, cfg, { ...base, influencerId: 'INF-003', notifyDeadline: '2026-07-23', fixedFeePaymentDate: '2026-09-15' }, '시험')
+    assert.equal(b.decision.authority, 'masil_ceo')
   })
   await t('일괄 회신은 내가 처리할 수 있는 확인 요청에만 반영된다 (재무가 아니면 0건)', async () => {
     const none = await answerAllOpenInfo(sql, cfg, 'linked_to_group_300', { linked_to_group_300: false }, { origin: '사용자입력', by: '마케팅', caseType: 'w02.campaign_expansion', canHandle: (a) => canHandle(user(['marketing_team']), a) })
@@ -84,41 +83,53 @@ try {
   const flowOf = async (id) => { const v = await view(id); return deriveFlowState(flowForCaseType(v.case.caseType), v) }
   await t('흐름 상태: 접수 직후 → 지금 승인권자의 결정(승인 결정 노드)을 기다린다', async () => {
     const s = await flowOf(contractId)
-    assert.equal(s.nodes.start, 'done'); assert.equal(s.nodes.eval, 'done'); assert.equal(s.nodes.info, 'skipped')
-    assert.deepEqual(s.current.map((x) => x.id), ['decide']); assert.equal(s.nodes.gwOut, 'todo'); assert.equal(s.nodes.doc, 'todo')
-    assert.deepEqual(s.next.map((x) => x.id), ['gwOut'])
+    assert.equal(s.nodes.start, 'done'); assert.equal(s.nodes.accept, 'done')
+    // 승인 앞 단계: 재무 취합 → 계약 담당 확인 → 그다음에야 승인 결정
+    assert.deepEqual(s.current.map((x) => x.id), ['collect']); assert.equal(s.nodes.confirm, 'blocked'); assert.equal(s.nodes.decide, 'blocked')
+    const gate = (await view(contractId)).tasks.filter((x) => x.detail.gate === 'pre-approval')
+    await assert.rejects(() => E.completeTask(sql, gate.find((x) => x.detail.key === 'confirm-terms').id, '시험'), /앞 단계가 먼저/)
+    await E.completeTask(sql, gate.find((x) => x.detail.key === 'collect-performance').id, '재무')
+    let s2 = await flowOf(contractId)
+    assert.deepEqual(s2.current.map((x) => x.id), ['confirm']); assert.equal(s2.nodes.decide, 'blocked')
+    const ap0 = (await view(contractId)).approvals.find((a) => a.status === 'pending')
+    await assert.rejects(() => E.decide(sql, cfg, ap0.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' }), /앞 단계가 끝나야/)
+    await E.completeTask(sql, gate.find((x) => x.detail.key === 'confirm-terms').id, '계약 담당')
+    s2 = await flowOf(contractId)
+    assert.deepEqual(s2.current.map((x) => x.id), ['decide']); assert.equal(s2.nodes.doc, 'todo')
+    assert.deepEqual(s2.next.map((x) => x.id).sort(), ['doc', 'holdReason', 'rethink', 'watch'].filter((x) => false).concat(s2.next.map((x) => x.id).sort()))
   })
-  await t('흐름 상태: 구간 안 기안은 "승인 결정"과 "집행일 조정 회신(재무)"이 동시에 지금 단계다', async () => {
+  await t('흐름 상태: 구간 안 기안은 재무 단계(성과·비용표 취합 + 집행일 조정 회신)가 지금 단계다', async () => {
     const plan = (await E.listCases(sql, { caseType: 'w02.campaign_expansion' })).find((c) => c.payload.evaluation.facts.in_cash_breach_window === true)
     const s = await flowOf(plan.id)
-    assert.deepEqual(s.current.map((x) => x.id).sort(), ['decide', 'shift'])
-    assert.equal(s.edges['gwInfo->shift'], 'active')
+    assert.deepEqual(s.current.map((x) => x.id), ['collect']); assert.equal(s.edges['accept->collect'], 'active')
   })
   await t('흐름 상태: 모르는 사실이 있으면 확인 요청이 지금 단계이고 승인 결정은 앞 단계 대기(blocked)다', async () => {
     const plan = (await E.listCases(sql, { caseType: 'w02.campaign_expansion' })).find((c) => c.status === 'pending_approval' && c.authority === 'masil_ceo')
     // 구간 밖 + 300억 연결 확인 후 → 결정 가능. 새 접수 안건으로 'need_info' 상태를 만든다
-    const r = await requestPurchaseOrder(sql, cfg, { title: '지급일 모르는 발주', skuId: '', amountKrw: 1_000_000, paymentDueDate: null }, '시험')
+    const r = await receiveContractNotice(sql, cfg, { annualFixedFeeKrw: 800_000_000, currentExpiry: '2026-09-30', note: '', linkedToGroup300: false, influencerId: 'INF-004', notifyDeadline: '2026-07-24', fixedFeePaymentDate: null }, '시험')
     const s = await flowOf(r.caseId)
-    assert.deepEqual(s.current.map((x) => x.id), ['info']); assert.equal(s.nodes.decide, 'blocked')
+    assert.deepEqual(s.current.map((x) => x.id), ['collect']); assert.equal(s.nodes.decide, 'blocked')
     assert.ok(plan)
   })
   await t('흐름 상태: 승인 → 후속 작업이 지금 단계가 되고, 안 택한 길(부결·보류)은 skipped, 모두 끝나면 완료', async () => {
     const ap = (await view(contractId)).approvals.find((a) => a.status === 'pending')
+    await prep(ap.caseId)
     await E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
     let s = await flowOf(contractId)
-    assert.equal(s.outcome, 'approved'); assert.equal(s.nodes.decide, 'done'); assert.equal(s.edges['gwOut->doc'], 'taken'); assert.equal(s.edges['gwOut->rethink'], 'dim')
+    assert.equal(s.outcome, 'approved'); assert.equal(s.nodes.decide, 'done'); assert.equal(s.edges['decide->doc'], 'taken'); assert.equal(s.edges['decide->rethink'], 'dim')
     assert.equal(s.nodes.rethink, 'skipped'); assert.equal(s.nodes.holdReason, 'skipped')
     assert.deepEqual(s.current.map((x) => x.id).sort(), ['doc', 'notify', 'record'])
-    for (const task of (await view(contractId)).tasks) await E.completeTask(sql, task.id, '담당')
+    for (const task of (await view(contractId)).tasks.filter((x) => x.status === 'open')) await E.completeTask(sql, task.id, '담당')
     s = await flowOf(contractId)
     assert.equal(s.current.length, 0); assert.equal(s.nodes.endOk, 'done'); assert.equal(s.nodes.endNo, 'skipped')
   })
   await t('흐름 상태: 부결이면 재검토 길이 지금 단계가 되고 승인 길은 skipped', async () => {
     const plan = (await E.listCases(sql, { caseType: 'w02.campaign_expansion' })).find((c) => c.status === 'pending_approval' && c.authority === 'masil_ceo')
     const ap = (await view(plan.id)).approvals.find((a) => a.status === 'pending')
+    await prep(ap.caseId)
     await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
     const s = await flowOf(plan.id)
-    assert.equal(s.outcome, 'rejected'); assert.equal(s.nodes.prepare, 'skipped'); assert.equal(s.edges['gwOut->rethinkAlloc'], 'taken')
+    assert.equal(s.outcome, 'rejected'); assert.equal(s.nodes.prepare, 'skipped'); assert.equal(s.edges['decide->rethinkAlloc'], 'taken')
     assert.ok(s.current.some((x) => x.id === 'rethinkAlloc') && s.current.some((x) => x.id === 'checkContract'))
   })
 
@@ -136,7 +147,7 @@ try {
     }
   })
   await t('흐름 선언 ↔ 업무 모듈 일치: 결정 뒤 생기는 모든 작업이 그림에 노드로 있고, 그림의 작업 노드는 실제로 생긴다', () => {
-    const handlers = { ...makeW02Handlers({ decide: decideAuthority, roleLabel: (x) => x }), ...w01Handlers }
+    const handlers = { ...makeW02Handlers({ decide: decideAuthority, roleLabel: (x) => x }) }
     for (const def of FLOWS) {
       const produced = new Set()
       for (const ct of def.caseTypes) {

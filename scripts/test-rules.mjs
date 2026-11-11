@@ -17,9 +17,9 @@ t('전속계약 8억(10억 이하) → Masil 대표', () => {
   const d = run('w02.contract_renewal', { annual_contract_value_krw: 800_000_000, creates_cash_outflow: true, in_cash_breach_window: false, linked_to_group_300: false })
   assert.equal(d.authority, 'masil_ceo')
 })
-t('전속계약 8억 + 하회 구간 안 → 평시 전결(Masil 대표)이 효력을 잃고 그룹 CEO', () => {
+t('전속계약 8억 + 하회 구간 안 → 평시 전결(Masil 대표)이 효력을 잃고 CEO/이사회', () => {
   const d = run('w02.contract_renewal', { annual_contract_value_krw: 800_000_000, creates_cash_outflow: true, in_cash_breach_window: true, linked_to_group_300: false })
-  assert.equal(d.authority, 'group_ceo')
+  assert.equal(d.authority, 'ceo_board')
 })
 t('전속계약 28억 + 하회 여부 모름 → 이미 최고 권한이라 묻지 않고 확정', () => {
   const d = run('w02.contract_renewal', { annual_contract_value_krw: 2_800_000_000, creates_cash_outflow: true, in_cash_breach_window: null, linked_to_group_300: null })
@@ -35,9 +35,9 @@ t('기안 500만 원이라도 총액 1.81억(1억 초과) → Masil 대표 + 그
   const d = run('w02.campaign_expansion', { per_plan_amount_krw: 5_000_000, draft_total_krw: 180_803_272, creates_cash_outflow: true, in_cash_breach_window: false, linked_to_group_300: false })
   assert.equal(d.authority, 'masil_ceo'); assert.deepEqual(d.also, ['그룹 보고'])
 })
-t('기안 500만 원 + 총액 5천만 원 + 하회 구간 안 → 금액이 작아도 그룹 CEO', () => {
+t('기안 500만 원 + 총액 5천만 원 + 하회 구간 안 → 금액이 작아도 CEO/이사회', () => {
   const d = run('w02.campaign_expansion', { per_plan_amount_krw: 5_000_000, draft_total_krw: 50_000_000, creates_cash_outflow: true, in_cash_breach_window: true, linked_to_group_300: false })
-  assert.equal(d.authority, 'group_ceo')
+  assert.equal(d.authority, 'ceo_board')
 })
 
 // ── 정보 부족 ──

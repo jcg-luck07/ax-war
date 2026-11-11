@@ -18,6 +18,7 @@ const seedW02 = async () => {
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const view = (id) => E.getCaseView(sql, id)
+const prep = async (caseId) => { for (const t of (await E.getCaseView(sql, caseId)).tasks.filter((x) => x.status === 'open' && x.detail.gate === 'pre-approval')) await E.completeTask(sql, t.id, '시험') } // 승인 앞 단계 끝내기
 const find = async (type, pred = () => true) => (await E.listCases(sql, { caseType: type })).find(pred)
 const planCase = async (planId) => find(EXPANSION_CASE_TYPE, (c) => c.subjectRefs.plan === planId)
 const infoTask = async (id, fact) => (await view(id)).tasks.find((x) => x.taskType === 'info_request' && x.status === 'open' && x.detail.fact === fact)
@@ -40,14 +41,14 @@ try {
     assert.equal(r.contract.decision.authority, 'ceo_board'); assert.equal(r.contract.statusAfter, 'pending_approval')
   })
 
-  await t('근거: 기안 총액 1.81억(>1억) → 건당 금액이 작아도 대표급 이상, 구간 안이면 그룹 CEO, 구간 밖은 300억 연결 여부 확인 필요', async () => {
+  await t('근거: 기안 총액 1.81억(>1억) → 건당 금액이 작아도 대표급 이상, 구간 안이면 CEO/이사회, 구간 밖은 300억 연결 여부 확인 필요', async () => {
     const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
     const inWin = plans.filter((p) => p.payload.evaluation.facts.in_cash_breach_window === true)
     const outWin = plans.filter((p) => p.payload.evaluation.facts.in_cash_breach_window === false)
     assert.ok(inWin.length > 0 && outWin.length > 0)
-    assert.ok(inWin.every((p) => p.authority === 'group_ceo' && p.status === 'pending_approval'))
+    assert.ok(inWin.every((p) => p.authority === 'ceo_board' && p.status === 'pending_approval'))
     assert.ok(outWin.every((p) => p.status === 'need_info'))
-    console.log(`   구간 안 ${inWin.length}건 → 그룹 CEO / 구간 밖 ${outWin.length}건 → 확인 필요(300억 연결 여부)`)
+    console.log(`   구간 안 ${inWin.length}건 → CEO/이사회 / 구간 밖 ${outWin.length}건 → 확인 필요(300억 연결 여부)`)
   })
 
   await t('다른 부서 영향: 구간 안 기안마다 재무에 "집행 예정일 조정" 확인 요청이 자동 생성된다 (조정 시 승인권자 시뮬레이션 포함)', async () => {
@@ -61,12 +62,13 @@ try {
   await t('[상황 1 정상] 계약: CEO/이사회 승인 → 후속 작업 3개 → 모두 완료하면 안건이 닫힌다', async () => {
     const ap = (await view(contractId)).approvals.find((a) => a.status === 'pending')
     await assert.rejects(() => E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'masil_ceo', byName: '한지우' }), /권한이 부족/)
+    await prep(ap.caseId)
     const d = await E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연', comment: '실질 공헌이익 확인 후 조건 변경 통보' })
     assert.equal(d.statusAfter, 'approved'); assert.equal(d.taskIds.length, 3)
     const v = await view(contractId)
     assert.deepEqual(v.tasks.filter((x) => x.status === 'open').map((x) => x.assigneeRole).sort(), ['계약 담당', '계약 담당', '마케팅'])
     assert.ok(v.tasks.every((x) => x.dueDate === '2026-07-17'))
-    for (const task of v.tasks) await E.completeTask(sql, task.id, task.assigneeRole)
+    for (const task of v.tasks.filter((x) => x.status === 'open')) await E.completeTask(sql, task.id, task.assigneeRole)
     assert.equal((await view(contractId)).case.status, 'closed')
   })
 
@@ -107,12 +109,12 @@ try {
     const ap = (await view(contractId)).approvals.find((a) => a.status === 'pending')
     assert.equal(ap.requiredRole, 'masil_ceo')
   })
-  await t('[상황 3 반대 회신] 같은 질문에 "지급일 7/28(하회 구간 안)"이라고 답했다면 → 그룹 CEO (금액 8억이어도)', async () => {
+  await t('[상황 3 반대 회신] 같은 질문에 "지급일 7/28(하회 구간 안)"이라고 답했다면 → CEO/이사회 (금액 8억이어도)', async () => {
     const r0 = await E.openCase(sql, cfg, { caseType: CONTRACT_CASE_TYPE, title: '시험용 8억 계약', deadline: '2026-07-17', payload: { facts: { annual_contract_value_krw: 800_000_000, creates_cash_outflow: true, fixed_fee_payment_date: null, linked_to_group_300: false } } })
     assert.equal(r0.decision.status, 'need_info')
     const task = await infoTask(r0.caseId, 'in_cash_breach_window')
     const r = await E.provideInfo(sql, cfg, task.id, { answers: { fixed_fee_payment_date: '2026-07-28' }, origin: '사용자입력', by: '재무팀(모의)' })
-    assert.equal(r.decision.authority, 'group_ceo')
+    assert.equal(r.decision.authority, 'ceo_board')
   })
 
   await t('[상황 3 기안 묶음] 25건이 같은 질문(300억 연결?)을 하므로 한 번의 회신으로 구간 밖 기안 모두 확정된다', async () => {
@@ -126,16 +128,16 @@ try {
     console.log(`   회신 ${res.length}건 반영 → 구간 밖 ${outWin.length}건은 Masil 대표 + 그룹 보고`)
   })
 
-  await t('[다른 부서 영향] 재무가 집행일을 8/24(구간 밖)로 조정하면 → 승인권자가 그룹 CEO에서 Masil 대표로 내려가고 기존 요청은 대체된다', async () => {
+  await t('[다른 부서 영향] 재무가 집행일을 8/24(구간 밖)로 조정하면 → 승인권자가 CEO/이사회에서 Masil 대표로 내려가고 기존 요청은 대체된다', async () => {
     const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
     const p = plans.find((x) => x.payload.evaluation.facts.in_cash_breach_window === true)
-    assert.equal(p.authority, 'group_ceo')
+    assert.equal(p.authority, 'ceo_board')
     const task = await infoTask(p.id, 'settlement_date')
     const r = await E.provideInfo(sql, cfg, task.id, { answers: { settlement_date: '2026-08-24' }, origin: '사용자입력', by: '재무팀(모의)' })
-    // 집행일이 구간 밖이 되어 그룹 CEO 사유는 사라졌지만, 이 기안은 300억 연결 여부를 아직 모른다 → 바로 확정하지 않고 다시 확인
+    // 집행일이 구간 밖이 되어 CEO/이사회 사유는 사라졌지만, 이 기안은 300억 연결 여부를 아직 모른다 → 바로 확정하지 않고 다시 확인
     assert.equal(r.decision.authority, 'masil_ceo'); assert.equal(r.authorityChanged, true); assert.equal(r.decision.status, 'need_info')
     let v = await view(p.id)
-    assert.ok(v.approvals.some((a) => a.status === 'superseded' && a.requiredRole === 'group_ceo'))
+    assert.ok(v.approvals.some((a) => a.status === 'superseded' && a.requiredRole === 'ceo_board'))
     assert.equal(v.approvals.filter((a) => a.status === 'pending').length, 0)
     const link = await infoTask(p.id, 'linked_to_group_300')
     assert.ok(link, '300억 연결 여부 확인 요청이 새로 생김')
@@ -152,6 +154,7 @@ try {
     const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
     const p = plans.find((x) => x.authority === 'masil_ceo' && x.status === 'pending_approval')
     const ap = (await view(p.id)).approvals.find((a) => a.status === 'pending')
+    await prep(ap.caseId)
     const d = await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우', comment: '실질 공헌이익이 낮은 인플루언서 비중이 큼' })
     assert.equal(d.statusAfter, 'rejected')
     const v = await view(p.id)

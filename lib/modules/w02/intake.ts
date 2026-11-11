@@ -1,14 +1,12 @@
 // 안건 접수 — 새 일이 들어오는 입구 (서버 전용). 접수하면 곧바로 규칙집이 평가해서 승인 요청 또는 확인 요청이 생긴다.
 //  1) 캠페인 확대 기안: 마케팅팀이 올린 기안(mkt_budget_plan_ms)을 한꺼번에 접수한다. 이미 접수한 기안은 건너뛴다.
 //  2) 전속계약 갱신 통보: 통보서의 값을 입력해 접수한다.
-//  3) 재고 발주 승인 요청: 발주 내용을 입력해 접수한다.
 import type { Sql } from 'postgres'
 import { EngineError, listCases, openCase, type EngineConfig } from '@/lib/engine/engine'
 import { fmtWon } from '@/lib/app/format'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
 import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
-import { PO_CASE_TYPE } from '@/lib/modules/w01/handlers'
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 const isDate = (s: string) => DATE.test(s) && !Number.isNaN(Date.parse(s))
@@ -55,18 +53,24 @@ export interface ContractNoticeInput {
   influencerId: string
   annualFixedFeeKrw: number
   notifyDeadline: string
-  currentExpiry: string
+  /** 신규 인플루언서(첫 계약)는 현 계약이 없어 null */
+  currentExpiry: string | null
   fixedFeePaymentDate: string | null
   note: string
+  /** 그룹 300억 사업 연결 여부. 모르면 null(확인 요청) */
+  linkedToGroup300?: boolean | null
+  /** 원본에 없는 신규 인플루언서면 그 이름 (접수 체크리스트로 확인한 값) */
+  newInfluencerName?: string
 }
 
 export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: ContractNoticeInput, actorName: string) {
   const influencers = await entityRows(sql, MASIL_MODEL, 'influencer')
-  const infl = influencers.find((i) => i.influencer_id === input.influencerId)
+  const found = influencers.find((i) => i.influencer_id === input.influencerId)
+  const infl = found ?? (input.newInfluencerName ? { influencer_name: input.newInfluencerName } : undefined)
   if (!infl) throw new EngineError(`인플루언서 번호 ${input.influencerId} 를 찾을 수 없어요 (예: INF-001)`)
   if (!(input.annualFixedFeeKrw > 0)) throw new EngineError('연 고정 피는 0보다 커야 해요')
   if (!isDate(input.notifyDeadline)) throw new EngineError('통보 기한을 YYYY-MM-DD 로 입력해 주세요')
-  if (!isDate(input.currentExpiry)) throw new EngineError('현 계약 만료일을 YYYY-MM-DD 로 입력해 주세요')
+  if (input.currentExpiry === null ? !input.newInfluencerName : !isDate(input.currentExpiry)) throw new EngineError('현 계약 만료일을 YYYY-MM-DD 로 입력해 주세요')
   if (input.fixedFeePaymentDate && !isDate(input.fixedFeePaymentDate)) throw new EngineError('고정 피 지급일을 YYYY-MM-DD 로 입력해 주세요')
   const existing = (await listCases(sql, { caseType: CONTRACT_CASE_TYPE })).find(
     (c) => c.subjectRefs.influencer === input.influencerId && c.deadline === input.notifyDeadline && !['closed'].includes(c.status),
@@ -82,32 +86,10 @@ export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: 
         annual_contract_value_krw: input.annualFixedFeeKrw,
         creates_cash_outflow: true,
         fixed_fee_payment_date: input.fixedFeePaymentDate, // 모르면 null → 확인 요청
-        linked_to_group_300: null,
+        linked_to_group_300: input.linkedToGroup300 ?? null,
       },
       contract: { currentExpiry: input.currentExpiry, notifyDeadline: input.notifyDeadline, note: input.note },
     },
-    dataOrigin: '사용자입력',
-    actorName,
-  })
-}
-
-export interface PurchaseRequestInput {
-  title: string
-  skuId: string
-  amountKrw: number
-  paymentDueDate: string | null
-}
-
-export async function requestPurchaseOrder(sql: Sql, cfg: EngineConfig, input: PurchaseRequestInput, actorName: string) {
-  if (!input.title.trim()) throw new EngineError('발주 내용을 입력해 주세요')
-  if (!(input.amountKrw > 0)) throw new EngineError('발주 금액은 0보다 커야 해요')
-  if (input.paymentDueDate && !isDate(input.paymentDueDate)) throw new EngineError('대금 지급 예정일을 YYYY-MM-DD 로 입력해 주세요')
-  return openCase(sql, cfg, {
-    caseType: PO_CASE_TYPE,
-    title: `${input.title.trim()} — ${fmtWon(input.amountKrw)}`,
-    deadline: null,
-    subjectRefs: input.skuId ? { sku: input.skuId } : {},
-    payload: { facts: { creates_cash_outflow: true, payment_due_date: input.paymentDueDate, linked_to_group_300: false }, order: { amountKrw: input.amountKrw } },
     dataOrigin: '사용자입력',
     actorName,
   })

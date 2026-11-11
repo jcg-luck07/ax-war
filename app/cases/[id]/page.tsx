@@ -5,7 +5,8 @@ import { AppShell } from '@/components/AppShell'
 import { PageHeader } from '@/components/ax'
 import { OriginPill, Pill, StatusPill } from '@/components/bits'
 import { DecisionPanel, FactChangeForm, InfoReplyForm, ResubmitButton, TaskDoneButton } from '@/components/case-actions'
-import { FlowDiagram, FlowStrip } from '@/components/FlowDiagram'
+import { FlowExplorer } from '@/components/FlowExplorer'
+import { LANES_OF_ROLE, buildNodeDetails } from '@/lib/process/detail'
 import { canHandle, canWork, currentUser, decidingRole, roleLabels } from '@/lib/app/auth'
 import { flowForCaseType } from '@/lib/process/definitions'
 import { deriveFlowState } from '@/lib/process/state'
@@ -16,10 +17,10 @@ import {
 } from '@/lib/app/format'
 import { tryPerformance } from '@/lib/app/queries'
 import { EngineError, daysUntil, getCaseView, type EventRow, type CaseView } from '@/lib/engine/engine'
-import { buildBriefInput } from '@/lib/modules/w02/evidence'
+import { buildBriefInput, contractPackage, financePackage } from '@/lib/modules/w02/evidence'
+import { CATEGORIES, listSubmissions } from '@/lib/modules/intake/submissions'
 import { w02Notes, type W02Ctx } from '@/lib/modules/w02/handlers'
 import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
-import { PO_CASE_TYPE } from '@/lib/modules/w01/handlers'
 import type { AuthorityDecision } from '@/lib/rules/types'
 
 export const dynamic = 'force-dynamic'
@@ -69,9 +70,6 @@ function changeFormFor(view: CaseView) {
   if (c.caseType === EXPANSION_CASE_TYPE) {
     return { fact: 'settlement_date', label: '집행 예정일 (YYYY-MM-DD)', placeholder: '예: 2026-08-24', unit: 1, hint: '집행 시기를 옮기면 현금 하회 구간과의 관계가 달라져 승인권자가 바뀔 수 있어요.' }
   }
-  if (c.caseType === PO_CASE_TYPE) {
-    return { fact: 'payment_due_date', label: '대금 지급 예정일 (YYYY-MM-DD)', placeholder: '예: 2026-09-15', unit: 1, hint: undefined }
-  }
   return null
 }
 
@@ -111,10 +109,48 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
   const flowState = flow ? deriveFlowState(flow, view) : null
   const approverLabel = pending ? roleLabel(pending.requiredRole) : c.authority ? roleLabel(c.authority) : '승인권자'
   const laneLabels = { approver: approverLabel }
+  // 내가 맡은 레인: 내 역할의 부서 + (내가 결정할 수 있으면) 승인권자
+  const myLanes = [...new Set([...user.roles.flatMap((r) => LANES_OF_ROLE[r] ?? []), ...(canDecideNow ? ['approver'] : [])])]
+  const subCalc = (c.payload as { submission?: { calc?: { result: { contributionProfit: number; realRoas: number | null } } } }).submission?.calc
+  const primary = [
+    ...(subCalc ? [`제출 추계 공헌이익(팀원 입력, 가정): ${Math.round(subCalc.result.contributionProfit / 10_000).toLocaleString('ko-KR')}만 원${subCalc.result.realRoas === null ? '' : ` · 실질 ROAS ${subCalc.result.realRoas.toFixed(2)}배`}`] : []),
+    ...brief.reasons.filter((r) => r.startsWith('실질 공헌이익')),
+  ]
+  const secondary = brief.reasons.filter((r) => /^(GMV|광고비|배분)/.test(r))
+  // 업무 발생 단계: 팀원이 올린 기록(접수 대기 테이블)이 있으면 보여 준다
+  const subRef = (c.payload as { submission?: { id?: number } }).submission?.id
+  const subRow = subRef ? (await listSubmissions(sql)).find((x) => x.id === subRef) : undefined
+  const subCat = subRow ? CATEGORIES.find((x) => x.id === subRow.category) : undefined
+  const submission = subRow && subCat
+    ? {
+        submittedBy: subRow.submittedBy, createdAt: subRow.createdAt, categoryLabel: subCat.label, refId: subRow.refId,
+        input: Object.entries(subRow.input).filter(([, v]) => v).map(([k, v]) => ({ label: subCat.fields.find((f) => f.name === k)?.label ?? k, value: v })),
+      }
+    : null
+  const planRef = (c.subjectRefs as Record<string, string>).plan
+  const sourceNote = !submission && planRef ? `원본 기안 파일(02_masil/marketing/mkt_budget_plan_ms.csv)의 ${planRef} 에서 가져왔어요. 작성한 팀원 이름은 원본에 없어요.` : null
+  const evCtx = { asOf: AS_OF, perf, cash }
+  const nodeDetails = flow && flowState
+    ? buildNodeDetails(flow, flowState, view, {
+        laneLabel: (id) => laneLabels[id as 'approver'] ?? flow.lanes.find((l) => l.id === id)?.label ?? id,
+        fmtTime: fmtDateTime,
+        roleLabel,
+        submission,
+        sourceNote,
+        finance: financePackage(view, evCtx),
+        contract: contractPackage(view, AS_OF),
+        primaryEvidence: primary,
+        secondaryEvidence: secondary,
+        caveats: brief.caveats,
+        ruleTrace: decision?.trace ?? [],
+      })
+    : {}
+  const initialNode =
+    flowState?.current.find((n) => myLanes.includes(n.lane))?.id ?? flowState?.current[0]?.id ?? 'start'
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-10">
+      <div className="flex flex-col gap-3">
         <PageHeader
           title={c.title}
           description={`${CASE_TYPE[c.caseType] ?? c.caseType} · 안건 #${c.id}`}
@@ -142,9 +178,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
               <Card.Description>{flow.description}</Card.Description>
             </Card.Header>
             <Card.Content className="flex flex-col gap-4">
-              <FlowStrip def={flow} state={flowState} laneLabels={laneLabels} />
-              <FlowDiagram def={flow} state={flowState} laneLabels={laneLabels} uid={`case${c.id}`} />
-              <p className="t-caption">초록 = 끝남 · 파란 테두리 = 지금 여기서 기다림 · 노랑 = 앞 단계가 끝나야 함 · 흐림 = 이번에는 가지 않는 길 · 점선 화살표 = 되돌아가 다시 평가</p>
+              <FlowExplorer def={flow} state={flowState} laneLabels={laneLabels} myLanes={myLanes} details={nodeDetails} uid={`case${c.id}`} initial={initialNode} />
             </Card.Content>
           </Card>
         )}
@@ -164,10 +198,10 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
             <Card.Title>다음 행동</Card.Title>
             <Card.Description>사람이 결정하거나 모르는 사실을 채우면, 시스템이 다시 평가하고 후속 작업을 만들어요.</Card.Description>
           </Card.Header>
-          <Card.Content className="flex flex-col gap-8">
+          <Card.Content className="flex flex-col gap-3">
             {pending && <DecisionPanel approvalId={pending.id} requiredLabel={roleLabel(pending.requiredRole)} allowed={canDecideNow} myRoles={myRoles} />}
             {openInfo.map((t) => (
-              <div key={t.id} className="flex flex-col gap-2 rounded-card border border-default p-4">
+              <div key={t.id} className="flex flex-col gap-2 rounded-card border border-default p-2">
                 <div className="flex items-center gap-2">
                   <Pill color="warning">확인 요청</Pill>
                   <span className="t-small font-semibold">{t.title}</span>
@@ -191,7 +225,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
               <p className="t-small">지금 사람이 할 결정이 없어요. 아래 작업을 처리해 주세요.</p>
             )}
             {change && (
-              <div className="flex flex-col gap-2 border-t border-default pt-6">
+              <div className="flex flex-col gap-2 border-t border-default pt-2">
                 <p className="t-small font-semibold">조건이 바뀌었나요?</p>
                 <FactChangeForm caseId={c.id} fact={change.fact} label={change.label} placeholder={change.placeholder} unitMultiplier={change.unit} hint={change.hint} allowed={canWork(user)} />
               </div>
@@ -200,7 +234,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
         </Card>
 
         {/* 판단 근거 */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <Card>
             <Card.Header>
               <Card.Title>규칙집이 이렇게 판단했어요</Card.Title>
@@ -239,7 +273,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
           </Card.Header>
           <Card.Content className="flex flex-col gap-4">
             <p className="t-body">{brief.summary}</p>
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
               <div className="flex flex-col gap-2">
                 <p className="t-small font-semibold">근거</p>
                 {brief.reasons.map((r, i) => <p key={i} className="t-small">• {r}</p>)}
@@ -266,7 +300,7 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
           <Card.Content className="flex flex-col gap-3">
             {view.tasks.length === 0 && <p className="t-small">아직 작업이 없어요.</p>}
             {view.tasks.map((t) => (
-              <div key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-default p-3">
+              <div key={t.id} className="flex flex-wrap items-center justify-between gap-3 rounded-card border border-default p-2">
                 <div className="flex flex-col gap-1">
                   <span className="t-small font-semibold">{t.title}</span>
                   <span className="t-caption">
@@ -285,13 +319,13 @@ export default async function CaseDetail({ params }: { params: Promise<{ id: str
         </Card>
 
         {/* 승인 요청 이력 + 이력 */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
           <Card>
             <Card.Header><Card.Title>승인 요청</Card.Title></Card.Header>
             <Card.Content className="flex flex-col gap-3">
               {view.approvals.length === 0 && <p className="t-small">없음</p>}
               {view.approvals.map((a) => (
-                <div key={a.id} className="flex flex-col gap-1 rounded-card border border-default p-3">
+                <div key={a.id} className="flex flex-col gap-1 rounded-card border border-default p-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="t-small font-semibold">{roleLabel(a.requiredRole)}</span>
                     <Pill color={APPROVAL_STATUS[a.status]?.color ?? 'default'}>{APPROVAL_STATUS[a.status]?.label ?? a.status}</Pill>

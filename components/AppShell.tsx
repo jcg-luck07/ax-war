@@ -2,6 +2,9 @@ import type { ReactNode } from 'react'
 import { buttonVariants } from '@heroui/react'
 import { APP_NAME, isAxhubConfigured, loginUrl, logoutUrl, me } from '@/lib/axhub-server'
 import { Shell } from './Shell'
+import { DevAccountSwitcher } from './DevAccountSwitcher'
+import { DEV_ACCOUNTS, DEV_COOKIE, canSeeCash, currentUser } from '@/lib/app/auth'
+import { cookies } from 'next/headers'
 
 /**
  * 앱 전체 뼈대 — 상단바 + 사이드바 + 본문. axhub 콘솔과 같은 골격이에요 (그리는 건 components/Shell.tsx).
@@ -18,8 +21,11 @@ export async function AppShell({ children }: { children: ReactNode }) {
   // 회사 앱은 끊을 앱 세션이 없어 null 이에요. 그땐 콘솔 로그아웃을 안내해요.
   const logoutHref = configured ? await logoutUrl('/') : null
 
-  const account = !configured ? (
-    <span className="t-caption">로컬 실행 중</span>
+  const user = await currentUser()
+  const devId = (await cookies()).get(DEV_COOKIE)?.value ?? DEV_ACCOUNTS.find((a) => a.name === user.name)?.id ?? DEV_ACCOUNTS[0].id
+
+  const account = process.env.NODE_ENV !== 'production' ? (
+    <DevAccountSwitcher accounts={DEV_ACCOUNTS.map((a) => ({ id: a.id, label: a.label }))} current={devId} />
   ) : visitor.authenticated ? (
     <>
       {/* 회사 앱은 logoutHref 가 null — 버튼처럼 보이는 문구 대신 이름에 설명만 붙여요. */}
@@ -40,7 +46,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
   )
 
   return (
-    <Shell appName={APP_NAME} account={account} isAdmin={visitor.is_admin}>
+    <Shell appName={APP_NAME} account={account} isAdmin={process.env.NODE_ENV === 'production' ? visitor.is_admin : user.isAdmin} seesCash={canSeeCash(user)}>
       {children}
     </Shell>
   )

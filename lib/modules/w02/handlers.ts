@@ -45,6 +45,15 @@ export function inBreachWindow(c: DecisionCase, ctx: W02Ctx): boolean | null {
   return dateInBreachWindow(ctx.cashWindows, date)
 }
 
+/** 승인 앞 단계: 재무가 성과·비용표를 취합하고(수작업), 계약 담당이 계약 조건·기한을 확인한다. 둘 다 끝나야 승인권자가 결정할 수 있다.
+ *  W02.bpmn 의 '성과·비용표 취합' → '계약조건·기한 확인' (교육용 가정). 같은 안건에서 한 번만 만든다(once). */
+export function prepTasks(deadline: string | null, contractTitle: string): TaskSpec[] {
+  return [
+    { key: 'collect-performance', taskType: 'prepare', title: '성과·비용표 취합', assigneeRole: '재무', dueDate: deadline, detail: { gate: 'pre-approval', once: true, basis: BPMN }, dataOrigin: '가정' },
+    { key: 'confirm-terms', taskType: 'prepare', title: contractTitle, assigneeRole: '계약 담당', dueDate: deadline, detail: { gate: 'pre-approval', once: true, after: 'collect-performance', basis: BPMN }, dataOrigin: '가정' },
+  ]
+}
+
 export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
   const describeFact: CaseHandler['describeFact'] = (fact) => {
     if (fact === 'in_cash_breach_window') {
@@ -70,6 +79,7 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
     caseType: CONTRACT_CASE_TYPE,
     describeFact,
     deriveFacts: (c, ctx) => ({ in_cash_breach_window: inBreachWindow(c, ctx as W02Ctx) }),
+    onEvaluated: (c): TaskSpec[] => prepTasks(c.deadline, '계약조건·기한 확인'),
     onDecision: (c, outcome): TaskSpec[] => {
       const deadline = c.deadline
       if (outcome === 'approved') {
@@ -96,7 +106,8 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
     // 다른 부서(재무)의 제약이 대안을 바꾸는 지점: 집행일이 하회 구간 안이면 재무에 '집행 시기 조정' 가능 여부를 묻는다.
     onEvaluated: (c, _d, ctx0): TaskSpec[] => {
       const ctx = ctx0 as W02Ctx
-      if (inBreachWindow(c, ctx) !== true) return []
+      const prep = prepTasks(c.deadline, '계약 확정기한·전속계약 확인')
+      if (inBreachWindow(c, ctx) !== true) return prep
       const date = outflowDate(c)!
       const win = ctx.cashWindows!.find((w) => date >= w.start && date <= w.end)!
       const suggested = nextBusinessDay(win.end)
@@ -104,6 +115,7 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
       const facts = { ...(p.facts ?? {}), in_cash_breach_window: false }
       const alt = deps.decide(EXPANSION_CASE_TYPE, facts)
       return [
+        ...prep,
         {
           key: 'finance-shift-settlement',
           taskType: 'info_request',

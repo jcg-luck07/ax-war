@@ -22,8 +22,35 @@ export interface AppUser {
 const ALL_ROLE_IDS = ROLES.map((r) => r.id)
 const validRoles = (ids: string[]) => ids.filter((x) => ALL_ROLE_IDS.includes(x))
 
+/** 로컬 개발·시험용 계정. 기본은 마케팅 팀원이고, 화면 오른쪽 위에서 다른 계정으로 바꿔 볼 수 있다 (배포본에는 없다). */
+export const DEV_ACCOUNTS: { id: string; name: string; label: string; roles: string[] }[] = [
+  { id: 'member', name: '마케팅 팀원', label: '마케팅 팀원', roles: ['marketing_member'] },
+  { id: 'lead', name: '마케팅 팀장', label: '마케팅 팀장', roles: ['marketing_team'] },
+  { id: 'finance', name: '재무팀', label: '재무팀', roles: ['finance'] },
+  { id: 'contract', name: '계약 담당', label: '계약 담당', roles: ['contract_mgr'] },
+  { id: 'masil', name: 'Masil 대표', label: 'Masil 대표', roles: ['masil_ceo'] },
+  { id: 'ceo', name: 'CEO/이사회', label: 'CEO/이사회', roles: ['ceo_board'] },
+]
+export const DEV_COOKIE = 'dev_account'
+
+async function devAccountId(): Promise<string | null> {
+  try {
+    const { cookies } = await import('next/headers')
+    return (await cookies()).get(DEV_COOKIE)?.value ?? null
+  } catch {
+    return null // 요청 밖(시험 등)
+  }
+}
+
 export async function currentUser(sqlArg?: Sql): Promise<AppUser> {
   if (process.env.NODE_ENV !== 'production') {
+    const devId = await devAccountId()
+    const acc = DEV_ACCOUNTS.find((a) => a.id === devId)
+    if (acc) return { authenticated: true, email: `${acc.id}@local`, name: acc.name, roles: acc.roles, isAdmin: false }
+    if (process.env.DEV_USER_ROLES === undefined && process.env.DEV_USER_NAME === undefined) {
+      const d = DEV_ACCOUNTS[0]
+      return { authenticated: true, email: `${d.id}@local`, name: d.name, roles: d.roles, isAdmin: false }
+    }
     const raw = process.env.DEV_USER_ROLES ?? 'all'
     return {
       authenticated: true,
@@ -73,3 +100,14 @@ export function canHandle(user: AppUser, assignee: string | null): boolean {
 export const canWork = (user: AppUser) => user.authenticated && user.roles.length > 0
 
 export const roleLabels = (ids: string[]) => ids.map((id) => roleById(id)?.label ?? id)
+
+/** 이 사람이 현금 재전망(covenant 하회 구간)을 볼 수 있는가 — 승인 권한이 있는 역할(팀장 이상) */
+export const canSeeCash = (user: AppUser) =>
+  user.authenticated && user.roles.some((id) => (roleById(id)?.rank ?? 0) > 0)
+
+/** 이 분류의 안건을 접수(받아서 안건으로 만들기)할 수 있는가 — 접수 최소 역할 이상 */
+export const canAcceptCategory = (user: AppUser, acceptRole: string) => user.authenticated && decidingRole(user, acceptRole) !== null
+
+/** 이 분류의 안건을 올릴 수 있는가 — 지정된 역할이거나 접수 권한자 */
+export const canSubmitCategory = (user: AppUser, submitRoles: string[], acceptRole: string) =>
+  user.authenticated && (user.roles.some((r) => submitRoles.includes(r)) || canAcceptCategory(user, acceptRole))

@@ -56,12 +56,12 @@ export const TASK_TYPE: Record<string, string> = {
   monitor: '모니터링',
   execute: '실행',
   report: '보고',
+  prepare: '승인 준비',
 }
 
 export const CASE_TYPE: Record<string, string> = {
   'w02.contract_renewal': '전속계약 갱신',
   'w02.campaign_expansion': '캠페인 확대 기안',
-  'w01.purchase_order': '재고 발주 (두 번째 업무 예시)',
 }
 
 export const ORIGIN: Record<string, { label: string; color: ChipColor }> = {

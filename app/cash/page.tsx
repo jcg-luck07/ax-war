@@ -7,11 +7,23 @@ import { fmtWon } from '@/lib/app/format'
 import { loadCashInputs } from '@/lib/modules/cash/service'
 import { DEFAULT_CASH_OPTIONS, simulateWithSensitivity } from '@/lib/modules/cash/simulate'
 import { AS_OF } from '@/lib/app/engine'
+import { canSeeCash, currentUser } from '@/lib/app/auth'
 
 export const dynamic = 'force-dynamic'
 
 export default async function CashPage() {
-  await getEngine()
+  const { sql } = await getEngine()
+  const user = await currentUser(sql)
+  if (!canSeeCash(user)) {
+    return (
+      <AppShell>
+        <div className="flex flex-col gap-3">
+          <PageHeader title="현금 재전망" description="승인 권한이 있는 역할만 볼 수 있는 화면이에요." />
+          <Card><Card.Content><p className="t-small">내 역할({user.name})로는 이 화면을 볼 수 없어요.</p></Card.Content></Card>
+        </div>
+      </AppShell>
+    )
+  }
   let inputs
   try {
     inputs = await loadCashInputs()
@@ -21,7 +33,7 @@ export default async function CashPage() {
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-10">
+      <div className="flex flex-col gap-3">
         <PageHeader
           title="현금 재전망"
           description="Masil 단독 기준(그룹 지원 제외)으로 매 영업일 종가가 최소현금 30억 원 아래로 내려가는지 봐요. 자금일보는 실적만 담고 있어서 미래는 회수·지급 일정을 직접 합산해요."
@@ -63,7 +75,7 @@ function CashBody({ inputs }: { inputs: Awaited<ReturnType<typeof loadCashInputs
             </p>
           ))}
           <p className="t-caption">
-            이 구간에 현금이 나가는 신규 약정은 금액·종류와 관계없이 그룹 CEO 승인이 필요해요 (covenant_terms_ms.md). 그래서 안건 화면의 &lsquo;돈 나가는 날&rsquo; 판단이 이 구간을 써요.
+            이 구간에 현금이 나가는 신규 약정은 금액·종류와 관계없이 CEO/이사회 승인이 필요해요 (covenant_terms_ms.md). 그래서 안건 화면의 &lsquo;돈 나가는 날&rsquo; 판단이 이 구간을 써요.
           </p>
         </Card.Content>
       </Card>
@@ -118,12 +130,14 @@ function CashBody({ inputs }: { inputs: Awaited<ReturnType<typeof loadCashInputs
       <Card>
         <Card.Header>
           <Card.Title>영업일별 종가 (앞 50영업일)</Card.Title>
+          <Card.Description>세로선이 최소현금 30억 원(covenant) 기준이에요. 선보다 왼쪽에서 끝나는 막대(빨강)가 하회일이에요.</Card.Description>
         </Card.Header>
         <Card.Content className="flex flex-col gap-1">
           {horizon.map((d) => (
             <div key={d.date} className="grid grid-cols-[7rem_1fr_6rem_4rem] items-center gap-3">
               <span className="t-caption">{d.date}</span>
-              <div className="h-2 rounded-input bg-muted">
+              <div className="relative h-2 rounded-input bg-muted">
+                <div className="absolute -top-1 h-4 w-px bg-default" style={{ left: `${Math.min(100, (3_000_000_000 / maxClose) * 100)}%` }} aria-hidden="true" />
                 <div className={`h-2 rounded-input ${d.breach ? 'bg-danger' : 'bg-primary'}`} style={{ width: `${Math.max(2, (d.closing / maxClose) * 100)}%` }} />
               </div>
               <span className="t-caption text-right">{fmtWon(d.closing)}</span>

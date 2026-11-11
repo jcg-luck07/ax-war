@@ -1,3 +1,5 @@
+'use client'
+
 // 업무 흐름(BPMN 방식) 그림. 선언(FlowDef) + 안건의 실제 상태(FlowState)만으로 그려요. 서버에서 그려요(상호작용 없음).
 //   가로 줄 = 레인(부서·역할), 상자 = 할 일, 마름모 = 분기, 동그라미 = 시작/끝, 화살표 = 다음 순서.
 //   색: 초록 = 끝남, 파랑 테두리 = 지금 여기서 기다림, 노랑 = 앞 단계가 끝나야 함, 흐림 = 이번에는 안 가는 길.
@@ -20,6 +22,11 @@ interface Props {
   counts?: Record<string, number>
   /** 같은 화면에 그림이 여럿일 때 화살표 머리 id 가 겹치지 않게 */
   uid: string
+  /** 노드를 눌렀을 때 (안건 화면) */
+  onSelect?: (nodeId: string) => void
+  selected?: string
+  /** 로그인한 사람이 맡은 레인 — 강조해서 보여 준다 */
+  myLanes?: string[]
 }
 
 const STATE_CLASS: Record<NodeState, string> = {
@@ -33,7 +40,7 @@ const STATE_TEXT: Record<NodeState, string> = {
   done: '끝남', current: '지금 여기', todo: '대기', blocked: '앞 단계 대기', skipped: '해당 없음',
 }
 
-export function FlowDiagram({ def, state, laneLabels, counts, uid }: Props) {
+export function FlowDiagram({ def, state, laneLabels, counts, uid, onSelect, selected, myLanes }: Props) {
   const laneIndex = new Map(def.lanes.map((l, i) => [l.id, i]))
   const maxCol = Math.max(...def.nodes.map((n) => n.col))
   const width = LABEL_W + (maxCol + 1) * COL_W + 16
@@ -44,6 +51,7 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid }: Props) {
   const byId = new Map(def.nodes.map((n) => [n.id, n]))
   const st = (n: FlowNode): NodeState => state?.nodes[n.id] ?? 'todo'
   const lanesWithCurrent = new Set((state?.current ?? []).map((n) => n.lane))
+  const mine = new Set(myLanes ?? [])
 
   const edgeClass = (s: EdgeState) =>
     s === 'taken' ? 'text-primary' : s === 'active' ? 'text-primary' : s === 'dim' ? 'text-subtle opacity-30' : 'text-subtle'
@@ -54,9 +62,9 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid }: Props) {
       <div className="relative" style={{ width, height }}>
         {/* 레인 */}
         {def.lanes.map((l, i) => (
-          <div key={l.id} className={`absolute left-0 right-0 ${i % 2 === 0 ? 'bg-surface' : 'bg-content'}`} style={{ top: i * LANE_H, height: LANE_H }}>
+          <div key={l.id} className={`absolute left-0 right-0 ${mine.has(l.id) ? 'bg-primary-soft' : i % 2 === 0 ? 'bg-surface' : 'bg-content'}`} style={{ top: i * LANE_H, height: LANE_H }}>
             <div className={`absolute left-3 top-1/2 -translate-y-1/2 t-small ${lanesWithCurrent.has(l.id) ? 'font-semibold text-primary' : 'font-semibold'}`} style={{ width: LABEL_W - 20 }}>
-              {laneLabels?.[l.id] ?? l.label}
+              {laneLabels?.[l.id] ?? l.label}{mine.has(l.id) ? ' (내 업무)' : ''}
             </div>
           </div>
         ))}
@@ -112,10 +120,15 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid }: Props) {
           const c = center(n), sz = size(n), s = st(n)
           const count = counts?.[n.id]
           const left = c.x - sz.w / 2, top = c.y - sz.h / 2
+          const isSel = selected === n.id
+          const isMine = mine.has(n.lane)
           return (
             <div key={n.id}>
+              {isMine && n.kind === 'task' && (
+                <div className="pointer-events-none absolute rounded-card border-2 border-primary" style={{ left: left - 3, top: top - 3, width: sz.w + 6, height: sz.h + 6, opacity: 0.55, borderRadius: 14 }} aria-hidden="true" />
+              )}
               {n.kind === 'task' && (
-                <div className={`absolute flex flex-col items-center justify-center rounded-card px-2 text-center ${STATE_CLASS[s]}`} style={{ left, top, width: sz.w, height: sz.h }} title={`${n.label} — ${STATE_TEXT[s]}`}>
+                <div className={`absolute flex flex-col items-center justify-center rounded-card px-2 text-center ${STATE_CLASS[s]}`} style={{ left, top, width: sz.w, height: sz.h, borderRadius: 12 }} title={`${n.label} — ${STATE_TEXT[s]}`}>
                   <span className="text-caption-01 font-semibold leading-tight">{n.label}</span>
                   {n.hint && <span className="text-caption-02 text-muted leading-tight">{n.hint}</span>}
                 </div>
@@ -131,6 +144,16 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid }: Props) {
                   <div className={`absolute rounded-full ${n.kind === 'end' ? 'border-4 border-default' : ''} ${s === 'done' ? 'bg-success-soft' : s === 'skipped' ? 'bg-muted opacity-50' : 'bg-content border border-default'}`} style={{ left, top, width: sz.w, height: sz.h }} title={`${n.label} — ${STATE_TEXT[s]}`} />
                   <div className="absolute text-center text-caption-02 leading-tight" style={{ left: c.x - 52, top: top + sz.h + 3, width: 104 }}>{n.label}</div>
                 </>
+              )}
+              {onSelect && (
+                <button
+                  type="button"
+                  className={`absolute cursor-pointer ${isSel ? 'outline outline-2 outline-offset-2 outline-primary' : ''}`}
+                  style={{ left: left - 4, top: top - 4, width: sz.w + 8, height: sz.h + 8, borderRadius: 12 }}
+                  aria-label={`${n.label} 자세히 보기`}
+                  aria-pressed={isSel}
+                  onClick={() => onSelect(n.id)}
+                />
               )}
               {s === 'current' && !counts && (
                 <div className="absolute text-caption-02 font-semibold text-primary" style={{ left: left, top: top - 15, width: Math.max(sz.w, 60) }}>▼ 지금 여기</div>

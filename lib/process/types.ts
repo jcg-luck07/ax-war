@@ -7,12 +7,10 @@ export type NodeKind = 'start' | 'task' | 'gateway' | 'end'
 
 /** 노드가 안건의 어떤 실제 상태에 대응하는지 */
 export type NodeBind =
-  | { t: 'start' } // 안건 접수
-  | { t: 'eval' } // 규칙 평가·승인권자 판정 (시스템)
-  | { t: 'infoGate' } // 모르는 사실이 있는가 (시스템)
-  | { t: 'info'; keys: string[] } // 확인 요청 작업(detail.key 가 keys 중 하나로 시작) — 담당 부서가 회신
-  | { t: 'decision' } // 승인권자의 결정
-  | { t: 'outcomeGate' } // 결정 결과 분기
+  | { t: 'start' } // 업무 발생 — 팀원이 안건을 올림
+  | { t: 'accept' } // 안건 접수 — 팀장(접수 권한자)이 받음. 안건이 있다는 것 자체가 접수됐다는 뜻
+  | { t: 'prep'; key: string; infoKeys?: string[] } // 승인 앞 단계 작업(detail.key) + 같은 부서에 온 확인 요청(detail.key 가 infoKeys 로 시작)
+  | { t: 'decision' } // 승인권자의 결정 (마름모: 승인됐는가?)
   | { t: 'task'; key: string; branch: Outcome } // 결정 뒤 생기는 후속 작업(detail.key)
   | { t: 'end'; branch: Outcome }
 

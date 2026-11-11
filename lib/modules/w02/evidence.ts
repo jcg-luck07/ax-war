@@ -5,7 +5,7 @@ import type { BriefInput } from '@/lib/app/brief'
 import { fmtPct, fmtRoas, fmtWon } from '@/lib/app/format'
 import type { PerformanceResult } from '@/lib/metrics/performance'
 import type { CashResult } from '@/lib/modules/cash/simulate'
-import { CONTRACT_CASE_TYPE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
+import { CONTRACT_CASE_TYPE, CONTRACT_NOTICE, EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import type { AuthorityDecision } from '@/lib/rules/types'
 
 const fmtDateStr = (s: string) => s // 날짜는 YYYY-MM-DD 그대로 보여 준다
@@ -97,4 +97,92 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
     alternatives,
     caveats,
   }
+}
+
+// ───────── 업무 흐름 단계별 자료 (노드를 눌렀을 때 보여 줄 근거) ─────────
+// 숫자는 모두 시맨틱 레이어·원본 파일에서 온 값이고, 어느 파일에서 왔는지 같이 적는다.
+
+export interface StepPackage {
+  /** 이 단계에서 모은(또는 모아야 할) 자료. "항목: 값 — 출처" 한 줄씩 */
+  lines: string[]
+  /** 원본에 없어 확인되지 않은 것 */
+  missing: string[]
+}
+
+/** 재무: 성과·비용표 취합 단계 */
+export function financePackage(view: CaseView, ctx: EvidenceCtx): StepPackage {
+  const c = view.case
+  const payload = c.payload as { plan?: Record<string, string | null>; facts?: Record<string, unknown>; order?: { amountKrw?: number } }
+  const lines: string[] = []
+  const missing: string[] = []
+  const plan = payload.plan
+  if (plan?.plan_id) {
+    lines.push(`기안 ${plan.plan_id}: 요청 예산 ${fmtWon(Number(plan.requested_budget_krw))}, 예상 GMV ${fmtWon(Number(plan.expected_gmv_krw))} — 02_masil/marketing/mkt_budget_plan_ms.csv`)
+    if (plan.settlement_date) lines.push(`집행(지급) 예정일: ${plan.settlement_date} · 계약 확정기한: ${plan.contract_deadline ?? '없음'} — 같은 파일`)
+  }
+  if (payload.order?.amountKrw) lines.push(`발주 금액: ${fmtWon(payload.order.amountKrw)} — 접수 입력`)
+  const perf = ctx.perf
+  const camp = perf?.byCampaign.find((x) => x.campaignId === c.subjectRefs.campaign)
+  const inf = perf?.byInfluencer.find((x) => x.influencerId === c.subjectRefs.influencer)
+  if (perf && camp) {
+    lines.push(`캠페인 ${camp.campaignName}(${camp.campaignId}) 실적: GMV ${fmtWon(camp.gmv)}, 환불 ${fmtWon(camp.refund)}, 광고비 ${fmtWon(camp.adSpend)}`)
+    lines.push(`  → 순매출 ${fmtWon(camp.netRevenue)}, 실질 공헌이익 ${fmtWon(camp.contributionProfit)}, 실질 ROAS ${fmtRoas(camp.realRoas)} — 주문·반품·광고비·원가표(mkt_orders/returns/ad_spend/cost_master)를 시맨틱 레이어로 계산`)
+  }
+  if (perf && inf) {
+    const n = perf.byInfluencer.length
+    lines.push(`인플루언서 ${inf.influencerName}(${inf.influencerId}): GMV ${n}명 중 ${inf.rankByGmv}위, 광고비 비중 ${fmtPct(inf.spendShare)} (${inf.rankBySpend}위), 실질 공헌이익 ${fmtWon(inf.contributionProfit)} (${inf.rankByContribution}위)`)
+  }
+  if (perf) {
+    lines.push(`가정: 원가·배송비는 주문 1건에 ${perf.assumptions.unitsPerOrder}회 적용, 환불 시 원가 ${perf.assumptions.recoverCostOnRefund ? '회수' : '미회수'}. 긴급배송 추가비용·CS 문의 비용은 자료가 없어 빠짐`)
+  } else {
+    missing.push('원본 자료가 DB 에 없어 캠페인·인플루언서 성과를 계산하지 못했어요')
+  }
+  const f = (c.payload as { evaluation?: { facts?: Record<string, unknown> } }).evaluation?.facts ?? {}
+  if (ctx.cash) {
+    const w = ctx.cash.windows
+    lines.push(w.length ? `현금 재전망 하회 구간: ${w.map((x) => `${x.start}~${x.end}`).join(', ')} (최소현금 30억 기준) — 02_masil/financials 자금·채권·채무 파일로 재계산` : '현금 재전망: 하회 구간 없음')
+    if (f.in_cash_breach_window === true) lines.push('이 안건의 돈 나가는 날이 하회 구간 안에 있어요 → CEO/이사회 승인 필요')
+  }
+  if (c.caseType === CONTRACT_CASE_TYPE) {
+    const fee = Number(f.annual_contract_value_krw ?? 0)
+    if (fee) lines.push(`전속계약 연 고정 피: ${fmtWon(fee)} — 접수 입력 (성과 피는 계약 원문이 없어 포함 안 됨)`)
+    missing.push('고정 피 지급 일정(현금 유출일)이 문서에 없음')
+  }
+  if (c.caseType === EXPANSION_CASE_TYPE) missing.push('그룹 300억 배분 사업 연결 여부 — 회의록에서 정리되지 않음 (재무가 회신)')
+  return { lines, missing }
+}
+
+/** 계약 담당: 계약조건·기한 확인 단계 */
+export function contractPackage(view: CaseView, asOf: string): StepPackage {
+  const c = view.case
+  const payload = c.payload as { contract?: { currentExpiry?: string; notifyDeadline?: string; note?: string }; plan?: Record<string, string | null> }
+  const lines: string[] = []
+  const missing: string[] = []
+  const inf = c.subjectRefs.influencer
+  if (c.caseType === CONTRACT_CASE_TYPE) {
+    const k = payload.contract
+    const isNewContract = !k?.currentExpiry
+    lines.push(isNewContract
+      ? `계약 체결 기한: ${k?.notifyDeadline ?? c.deadline ?? '미입력'} (${ddayLabel(c.deadline, asOf)}) — 신규 인플루언서라 현 계약·자동 갱신이 없고, 이 기한까지 계약을 맺어야 해요`
+      : `통보 기한: ${k?.notifyDeadline ?? c.deadline ?? '미입력'} (${ddayLabel(c.deadline, asOf)}) — 넘기면 동일 조건 1년 자동 갱신, 체결로 간주`)
+    if (k?.currentExpiry) lines.push(`현 계약 만료일: ${k.currentExpiry}`)
+    lines.push('승인권한: 연 10억 원 초과 전속계약은 CEO/이사회, 미통보 자동 갱신도 체결로 봄 — 00_common/approval_authority_policy.md')
+  } else if (c.caseType === EXPANSION_CASE_TYPE) {
+    const dl = payload.plan?.contract_deadline ?? c.deadline
+    lines.push(`계약 확정기한: ${dl ?? '없음'} (${ddayLabel(dl ?? null, asOf)}) — 넘기면 자동 확정되어 철회 불가, 하회 구간보다 앞서면 기한 전에 상신 (covenant_terms_ms.md)`)
+    lines.push('캠페인 확대 기안과 연간 전속계약은 별개 결정 — 기안을 부결해도 전속계약 자동 갱신은 막지 못함 (W02 안내)')
+  }
+  if (inf === CONTRACT_NOTICE.influencerId) {
+    lines.push(`${CONTRACT_NOTICE.influencerName}(${inf}) 전속계약: 고정 피 연 ${fmtWon(CONTRACT_NOTICE.annualFixedFeeKrw)}, 만료일 ${CONTRACT_NOTICE.currentExpiry}, 통보 기한 ${CONTRACT_NOTICE.notifyDeadline}, 갱신 후 중도 해지 시 잔여 고정 피의 50% 위약금 — ${CONTRACT_NOTICE.sourceFile}`)
+  } else if (inf && inf !== 'NONE') {
+    lines.push(`${inf} 의 계약 문서는 제공되지 않았어요`)
+  }
+  missing.push('성과 피(GMV 연동) 정산 조건 원문 없음', '실제 통보 수령 증빙 없음')
+  return { lines, missing }
+}
+
+const ddayLabel = (d: string | null, asOf: string) => {
+  if (!d) return '기한 없음'
+  const n = daysUntil(d, asOf)
+  return n === null ? '기한 없음' : n > 0 ? `${n}일 남음` : n === 0 ? '오늘' : `${-n}일 지남`
 }

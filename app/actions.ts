@@ -7,8 +7,9 @@ import {
   EngineError, completeTask, decide, provideInfo, resubmitCase, updateFacts, type Outcome,
 } from '@/lib/engine/engine'
 import { getEngine, roleLabel } from '@/lib/app/engine'
-import { canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
-import { importExpansionPlans, receiveContractNotice, requestPurchaseOrder } from '@/lib/modules/w02/intake'
+import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canSubmitCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
+import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
+import { importExpansionPlans, receiveContractNotice } from '@/lib/modules/w02/intake'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { ROLES } from '@/lib/rules/authority.rules'
@@ -118,7 +119,7 @@ export async function bulkReplyAction(input: { fact: string; answers: Record<str
 
 export async function importPlansAction() {
   return guarded(async (user, sql) => {
-    needRole(user)
+    if (!canAcceptCategory(user, 'marketing_team')) throw new EngineError('마케팅 팀장 이상만 일괄 접수할 수 있어요.')
     const { cfg } = await getEngine()
     const r = await importExpansionPlans(sql, cfg, user.name)
     return r.imported === 0 ? '새로 접수할 기안이 없어요.' : `확대 기안 ${r.imported}건을 접수했어요 (이미 접수된 ${r.skipped}건은 건너뜀).`
@@ -129,7 +130,7 @@ export async function receiveContractAction(input: {
   influencerId: string; annualFixedFeeEok: number; notifyDeadline: string; currentExpiry: string; fixedFeePaymentDate: string; note: string
 }) {
   return guarded(async (user, sql) => {
-    needRole(user)
+    if (!canAcceptCategory(user, 'marketing_team')) throw new EngineError('마케팅 팀장 이상만 직접 접수할 수 있어요. 안건 접수 화면에서 올려 주세요.')
     const { cfg } = await getEngine()
     const r = await receiveContractNotice(sql, cfg, {
       influencerId: input.influencerId.trim().toUpperCase(),
@@ -143,14 +144,28 @@ export async function receiveContractAction(input: {
   })
 }
 
-export async function requestPurchaseAction(input: { title: string; skuId: string; amountMan: number; paymentDueDate: string }) {
+// 안건 제출(보고)은 파일 첨부가 있어 app/api/submissions 로 받는다. 접수·반려는 팀장(접수 권한자)이 한다.
+
+export async function acceptSubmissionAction(input: { id: number; checked: string[] }) {
   return guarded(async (user, sql) => {
-    needRole(user)
+    const [row] = await sql`SELECT category FROM submissions WHERE id = ${input.id}`
+    const cat = row ? categoryById(row.category as string) : undefined
+    if (!cat) throw new EngineError('접수 대기 안건을 찾을 수 없어요')
+    if (!canAcceptCategory(user, cat.acceptRole)) throw new EngineError(`${roleLabel(cat.acceptRole)} 이상만 접수할 수 있어요.`)
     const { cfg } = await getEngine()
-    const r = await requestPurchaseOrder(sql, cfg, {
-      title: input.title, skuId: input.skuId.trim(), amountKrw: Math.round(input.amountMan * 10_000), paymentDueDate: input.paymentDueDate.trim() || null,
-    }, user.name)
-    return `발주 승인 요청 #${r.caseId} 를 접수했어요. ${r.decision.status === 'decided' ? `승인권자: ${r.decision.authorityLabel}` : '지급일 확인이 필요해요'}`
+    const r = await acceptSubmission(sql, cfg, input.id, user.name, input.checked)
+    return `접수했어요 (안건 #${r.caseId}). ${r.needInfo ? '확인이 필요한 사실이 있어요.' : `승인권자: ${r.authorityLabel}`}`
+  })
+}
+
+export async function returnSubmissionAction(input: { id: number; note: string }) {
+  return guarded(async (user, sql) => {
+    const [row] = await sql`SELECT category FROM submissions WHERE id = ${input.id}`
+    const cat = row ? categoryById(row.category as string) : undefined
+    if (!cat) throw new EngineError('접수 대기 안건을 찾을 수 없어요')
+    if (!canAcceptCategory(user, cat.acceptRole)) throw new EngineError(`${roleLabel(cat.acceptRole)} 이상만 반려할 수 있어요.`)
+    await returnSubmission(sql, input.id, user.name, input.note)
+    return '반려했어요. 올린 사람이 다시 올릴 수 있어요.'
   })
 }
 
@@ -175,4 +190,15 @@ export async function removeUserAction(input: { email: string }) {
     await sql`DELETE FROM user_roles WHERE email = ${input.email}`
     return '사용자를 목록에서 뺐어요.'
   }, { admin: true })
+}
+
+// ───────── 로컬 시험용 계정 전환 (배포본에서는 동작하지 않는다) ─────────
+
+export async function switchDevAccountAction(id: string) {
+  if (process.env.NODE_ENV === 'production') return { ok: false, message: '배포본에서는 계정을 바꿀 수 없어요.' }
+  if (!DEV_ACCOUNTS.some((a) => a.id === id)) return { ok: false, message: '알 수 없는 계정이에요.' }
+  const { cookies } = await import('next/headers')
+  ;(await cookies()).set(DEV_COOKIE, id, { path: '/', httpOnly: true, sameSite: 'lax' })
+  revalidatePath('/', 'layout')
+  return { ok: true, message: '계정을 바꿨어요.' }
 }

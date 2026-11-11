@@ -100,6 +100,41 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
     )
   `
 
+  // ⑤-2 안건 접수 대기 — 팀원이 올린 안건은 접수 권한자가 받아야 비로소 안건(decision_cases)이 된다.
+  await sql`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id           serial      PRIMARY KEY,
+      category     text        NOT NULL,
+      ref_id       text        NOT NULL,
+      title        text        NOT NULL,
+      input        jsonb       NOT NULL DEFAULT '{}'::jsonb,
+      submitted_by text        NOT NULL,
+      accept_role  text        NOT NULL,
+      status       text        NOT NULL DEFAULT 'pending',
+      decided_by   text,
+      decided_at   timestamptz,
+      note         text,
+      case_id      integer,
+      created_at   timestamptz NOT NULL DEFAULT now()
+    )
+  `
+
+  // ⑤-3 보고(제출)에 붙인 첨부파일 — 기안서·근거자료·추계서·메일·계약서 등. 파일 내용은 DB 에 그대로 담는다.
+  await sql`
+    CREATE TABLE IF NOT EXISTS submission_files (
+      id            serial      PRIMARY KEY,
+      submission_id integer     NOT NULL,
+      kind          text        NOT NULL,
+      filename      text        NOT NULL,
+      mime          text        NOT NULL,
+      size          integer     NOT NULL,
+      content       bytea       NOT NULL,
+      created_at    timestamptz NOT NULL DEFAULT now()
+    )
+  `
+
+  await sql`ALTER TABLE submission_files ADD COLUMN IF NOT EXISTS label text` // 직접 적은 첨부 종류 이름 (kind = 'custom')
+
   // ⑥ 원본 행 복사본 — CSV 한 줄을 그대로 담는다. 원본 파일은 읽기만 하고 절대 고치지 않는다.
   await sql`
     CREATE TABLE IF NOT EXISTS source_rows (

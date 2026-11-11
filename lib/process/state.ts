@@ -27,30 +27,31 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
   const decided = [...v.approvals].reverse().find((a) => a.status === 'approved' || a.status === 'rejected' || a.status === 'on_hold')
   const outcome = pending ? null : ((decided?.status as Outcome | undefined) ?? null)
   const hasEval = v.events.some((e) => e.eventType === 'evaluated')
-  const infoTasks = v.tasks.filter((t) => t.taskType === 'info_request')
   const status = v.case.status
+
+  const gateOpen = v.tasks.some((t) => t.status === 'open' && t.detail.gate === 'pre-approval')
 
   const nodeState = (n: FlowNode): NodeState => {
     const b = n.bind
     switch (b.t) {
       case 'start':
+      case 'accept':
         return 'done'
-      case 'eval':
-        return hasEval ? 'done' : 'todo'
-      case 'infoGate':
-        return hasEval ? 'done' : 'todo'
-      case 'info': {
-        const mine = infoTasks.filter((t) => b.keys.some((k) => key(t).startsWith(k)))
-        if (mine.some((t) => t.status === 'open')) return 'current'
+      case 'prep': {
+        const mine = v.tasks.filter((t) => key(t) === b.key || (b.infoKeys ?? []).some((k) => key(t).startsWith(k)))
+        const open = mine.filter((t) => t.status === 'open')
+        if (open.length > 0) {
+          const after = open.find((t) => key(t) === b.key)?.detail.after
+          const waiting = after ? v.tasks.some((t) => key(t) === String(after) && t.status === 'open') : false
+          return waiting ? 'blocked' : 'current'
+        }
         if (mine.length > 0) return 'done'
-        return 'skipped'
+        return hasEval ? 'done' : 'todo' // 이 단계가 생기기 전에 접수된 안건은 끝난 것으로 본다
       }
       case 'decision':
-        if (pending) return 'current'
+        if (pending) return gateOpen ? 'blocked' : 'current'
         if (outcome) return 'done'
-        return status === 'need_info' || status === 'open' ? 'blocked' : 'todo'
-      case 'outcomeGate':
-        return outcome ? 'done' : 'todo'
+        return 'blocked'
       case 'task': {
         const t = v.tasks.find((x) => key(x) === b.key)
         if (t) return t.status === 'open' ? 'current' : t.status === 'done' ? 'done' : 'skipped'
@@ -79,14 +80,6 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
       s = outcome === null ? 'normal' : outcome === e.when ? 'taken' : 'dim'
     } else if (from === 'skipped' || to === 'skipped') {
       s = 'dim'
-    } else if (e.from === 'gwInfo') {
-      // '있음' 길은 확인 요청이 있었을 때, '없음' 길은 없었을 때
-      const wentInfo = infoTasks.length > 0
-      const toInfo = byId.get(e.to)?.bind.t === 'info'
-      const toNow: NodeState = nodes[e.to]
-      s = toInfo ? (wentInfo && toNow !== 'skipped' ? (toNow === 'current' ? 'active' : 'taken') : 'dim') : wentInfo && status === 'need_info' ? 'dim' : 'taken'
-    } else if (e.back) {
-      s = from === 'done' && infoTasks.length > 0 && hasEval ? 'taken' : 'dim'
     } else if (from === 'done' && (to === 'done' || to === 'current')) {
       s = to === 'current' ? 'active' : 'taken'
     }

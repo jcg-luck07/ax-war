@@ -16,7 +16,7 @@ import { APP_ICON, NAVIGATION } from '@/config/navigation'
  * 화면을 추가할 땐 이 파일이 아니라 <AppShell> 안에 내용을 넣으세요.
  * 메뉴를 늘리려면 config/navigation.ts 를 고치세요.
  */
-export function Shell({ appName, account, isAdmin = false, children }: { appName: string; account: ReactNode; isAdmin?: boolean; children: ReactNode }) {
+export function Shell({ appName, account, isAdmin = false, seesCash = false, children }: { appName: string; account: ReactNode; isAdmin?: boolean; seesCash?: boolean; children: ReactNode }) {
   const path = usePathname()
   // 서랍을 연 화면의 주소를 기억해요. 다른 화면으로 이동하면 주소가 달라져 저절로 닫혀요.
   const [openedAt, setOpenedAt] = useState<string | null>(null)
@@ -24,7 +24,7 @@ export function Shell({ appName, account, isAdmin = false, children }: { appName
   const sections: NavSection[] = [
     {
       key: 'main',
-      items: NAVIGATION.filter((item) => isAdmin || !item.adminOnly).map((item) => ({
+      items: NAVIGATION.filter((item) => (isAdmin || !item.adminOnly) && (seesCash || !item.authorityOnly)).map((item) => ({
         key: item.href,
         href: item.href,
         icon: item.icon,

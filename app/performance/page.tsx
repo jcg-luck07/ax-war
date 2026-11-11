@@ -28,7 +28,7 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
 
   return (
     <AppShell>
-      <div className="flex flex-col gap-10">
+      <div className="flex flex-col gap-3">
         <PageHeader
           title="인플루언서 성과"
           description="GMV(얼마나 팔렸나)와 실질 공헌이익(얼마 남았나)을 같은 기준으로 나란히 봐요. 가정을 바꿔 결론이 유지되는지 확인할 수 있어요."
@@ -70,7 +70,7 @@ export default async function PerformancePage({ searchParams }: { searchParams: 
                 <Card.Title>배분은 성과를 따라가고 있나?</Card.Title>
                 <Card.Description>광고비 집행 순위와 실질 공헌이익 순위의 상관이에요. 원본 지침은 &ldquo;배분이 성과와 같은 방향인지 확인하라&rdquo;고만 해서, 계산식과 판정 기준(±0.3)은 제가 정한 가정이에요.</Card.Description>
               </Card.Header>
-              <Card.Content className="flex flex-wrap items-center gap-6">
+              <Card.Content className="flex flex-wrap items-center gap-3">
                 <span className="t-small">정렬도 <strong>{perf.alignment.spearman === null ? '계산 불가' : perf.alignment.spearman.toFixed(2)}</strong></span>
                 <Pill color={perf.alignment.direction === '반대 방향' ? 'danger' : perf.alignment.direction === '같은 방향' ? 'success' : 'default'}>{perf.alignment.direction}</Pill>
                 <span className="t-caption">10명 표본이라 통계 결론이 아니라 방향 표시예요.</span>
