@@ -47,7 +47,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const myInfo = mine.filter((t) => t.taskType === 'info_request')
 
   const mk = (key: string, caseId: number | null, caseTitle: string, kind: TodoItem['kind'], title: string, deadline: string | null, href?: string): TodoItem => ({
-    key, caseId, href: href ?? `/cases/${caseId}`, caseTitle, kind, title, deadline, days: deadline ? daysUntil(deadline, AS_OF) : null,
+    key, caseId, href: href ?? `/cases?id=${caseId}`, caseTitle, kind, title, deadline, days: deadline ? daysUntil(deadline, AS_OF) : null,
   })
   const toAccept = subs.filter((s) => canAcceptCategory(user, CATEGORIES.find((c) => c.id === s.category)!.acceptRole))
   const all: TodoItem[] = [
@@ -152,7 +152,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                   {bulk && <BulkReplyForm fact={fact} fields={fields} count={list.length} />}
                   <div className="flex flex-col gap-1">
                     {list.map((t) => (
-                      <Link key={t.id} href={`/cases/${t.caseId}`} className="t-caption">
+                      <Link key={t.id} href={`/cases?id=${t.caseId}`} className="t-caption">
                         • {t.caseTitle}{t.dueDate ? ` · 기한 ${t.dueDate}` : ''}
                       </Link>
                     ))}
@@ -172,7 +172,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
             </Card.Header>
             <Card.Content className="flex flex-col gap-2">
               {otherApprovals.slice(0, 12).map((a) => (
-                <Link key={a.id} href={`/cases/${a.caseId}`} className="t-caption">
+                <Link key={a.id} href={`/cases?id=${a.caseId}`} className="t-caption">
                   • {a.caseTitle} — {roleLabel(a.requiredRole)}
                 </Link>
               ))}

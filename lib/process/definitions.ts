@@ -4,6 +4,7 @@
 // 표기: 동그라미 = 시작·종료, 둥근 사각형 = 활동, 마름모 = 조건 분기. 가로 구역 = 담당 역할.
 // W02.bpmn 의 단계와 역할은 주최 측의 교육용 가정이다(세계관_BPMN/W02.html). 원본에 없는 단계(보류 사유 확인 등)는 우리가 더한 것이다.
 import type { FlowDef } from './types'
+import { CATEGORY_LABEL } from '@/lib/app/labels'
 
 const CONTRACT_LANES = [
   { id: 'marketing', label: '마케팅' },
@@ -14,7 +15,7 @@ const CONTRACT_LANES = [
 
 export const CONTRACT_FLOW: FlowDef = {
   id: 'contract_renewal',
-  title: '전속계약 갱신',
+  title: CATEGORY_LABEL.influencer,
   caseTypes: ['w02.contract_renewal'],
   description: '통보 기한 안에 갱신안을 상신하고, 결과를 상대방에 알려야 해요. 기한을 넘기면 동일 조건으로 자동 갱신(체결로 간주)돼요.',
   lanes: CONTRACT_LANES,
@@ -51,7 +52,7 @@ export const CONTRACT_FLOW: FlowDef = {
 
 export const EXPANSION_FLOW: FlowDef = {
   id: 'campaign_expansion',
-  title: '캠페인 확대 기안',
+  title: CATEGORY_LABEL.campaign,
   caseTypes: ['w02.campaign_expansion'],
   description: '집행 예정일이 현금 하회 구간 안이면 금액이 작아도 CEO/이사회 승인이 필요해요. 계약 확정기한을 넘기면 자동 확정돼요.',
   lanes: CONTRACT_LANES,

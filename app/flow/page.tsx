@@ -41,7 +41,7 @@ export default async function FlowPage() {
                   <div className="flex flex-col gap-2">
                     <p className="t-small font-semibold">지금 기다리는 안건</p>
                     {waiting.map(({ v, s }) => (
-                      <Link key={v.case.id} href={`/cases/${v.case.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-default p-2">
+                      <Link key={v.case.id} href={`/cases?id=${v.case.id}`} className="flex flex-wrap items-center justify-between gap-2 rounded-card border border-default p-2">
                         <span className="t-small">{v.case.title}</span>
                         <span className="flex items-center gap-2">
                           <span className="t-caption">

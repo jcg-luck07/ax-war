@@ -1,4 +1,5 @@
 // 화면 표시용 서식·라벨 (순수 함수 · 서버/브라우저 어디서나 import 가능). 영어 상태값은 화면에 보이지 않는다.
+import { CASE_TYPE_CATEGORY, caseTypeLabel } from './labels'
 
 /** 금액: 28억 원 / 6,131만 원 / 950원 (음수는 − 표시) */
 export function fmtWon(n: number | null | undefined): string {
@@ -59,10 +60,10 @@ export const TASK_TYPE: Record<string, string> = {
   prepare: '승인 준비',
 }
 
-export const CASE_TYPE: Record<string, string> = {
-  'w02.contract_renewal': '전속계약 갱신',
-  'w02.campaign_expansion': '캠페인 확대 기안',
-}
+// 안건 종류 이름은 lib/app/labels.ts 한 곳에서 온다 (안건 접수의 분류 이름과 같은 값)
+export const CASE_TYPE: Record<string, string> = Object.fromEntries(
+  Object.keys(CASE_TYPE_CATEGORY).map((t) => [t, caseTypeLabel(t)]),
+)
 
 export const ORIGIN: Record<string, { label: string; color: ChipColor }> = {
   원본: { label: '원본', color: 'success' },

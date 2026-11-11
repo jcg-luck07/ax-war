@@ -9,7 +9,8 @@ import { entityRows } from '@/lib/semantic/run'
 import { receiveContractNotice } from '@/lib/modules/w02/intake'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 
-export type CategoryId = 'influencer' | 'campaign'
+import { CATEGORY_LABEL, type CategoryId } from '@/lib/app/labels'
+export type { CategoryId }
 
 export interface FieldDef {
   name: string
@@ -41,7 +42,7 @@ const COMMON_FIELDS = (settleLabel: string, deadlineLabel: string, amountLabel: 
 
 export const CATEGORIES: Category[] = [
   {
-    id: 'influencer', label: '인플루언서 계약', refLabel: '인플루언서 ID', idRule: 'INF-nnn', idPattern: /^INF-\d{3}$/,
+    id: 'influencer', label: CATEGORY_LABEL.influencer, refLabel: '인플루언서 ID', idRule: 'INF-nnn', idPattern: /^INF-\d{3}$/,
     submitRoles: ['marketing_member', 'marketing_team'], acceptRole: 'marketing_team',
     fields: [
       ...COMMON_FIELDS('결산일 (고정 피 지급 예정일)', '계약 체결 기한 (갱신 통보 기한)', '요청금액 (연 고정 피, 만 원)'),
@@ -49,7 +50,7 @@ export const CATEGORIES: Category[] = [
     ],
   },
   {
-    id: 'campaign', label: '캠페인 집행', refLabel: '캠페인 ID', idRule: 'CMP-nnnn', idPattern: /^CMP-\d{4}$/,
+    id: 'campaign', label: CATEGORY_LABEL.campaign, refLabel: '캠페인 ID', idRule: 'CMP-nnnn', idPattern: /^CMP-\d{4}$/,
     submitRoles: ['marketing_member', 'marketing_team'], acceptRole: 'marketing_team',
     fields: COMMON_FIELDS('결산일 (집행·지급 예정일)', '계약 체결 기한 (계약 확정기한)', '요청금액 (집행 예산, 만 원)'),
   },

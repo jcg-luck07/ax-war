@@ -113,7 +113,7 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
                     </span>
                     <span className="flex items-center gap-2">
                       <Pill color={STATUS[s.status].color}>{STATUS[s.status].label}</Pill>
-                      {s.caseId && <Link href={`/cases/${s.caseId}`} className="t-caption underline">안건 #{s.caseId}</Link>}
+                      {s.caseId && <Link href={`/cases?id=${s.caseId}`} className="t-caption underline">안건 #{s.caseId}</Link>}
                     </span>
                   </div>
                 ))}

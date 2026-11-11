@@ -4,6 +4,7 @@
 // 무엇을 할 수 있는지는 서버가 정해서 넘겨주고(allowed), 실제 권한·필수 항목 확인은 서버가 다시 한다.
 import { useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
+import { formatDateInput } from '@/lib/app/date-input'
 import { Button, toast } from '@heroui/react'
 import { acceptSubmissionAction, returnSubmissionAction } from '@/app/actions'
 import { CONTRIBUTION_FIELDS, CONTRIBUTION_FORMULA, calcContribution, validateContribution } from '@/lib/metrics/contribution-calc'
@@ -34,10 +35,7 @@ export interface KindView {
 }
 
 /** 숫자만 쳐도 YYYY-MM-DD 로 만들어 준다 (하이픈은 자동) */
-const formatDate = (raw: string) => {
-  const d = raw.replace(/\D/g, '').slice(0, 8)
-  return d.length > 6 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6)}` : d.length > 4 ? `${d.slice(0, 4)}-${d.slice(4)}` : d
-}
+const formatDate = formatDateInput
 const NEW = '__new__'
 // 첨부서류 한 줄: 종류 이름 | 파일 선택 | (지우기) — 고정 칸과 직접 추가 칸이 같은 모양
 const ROW = 'grid grid-cols-[13rem_minmax(0,1fr)_auto] items-center gap-2 border-b border-default py-1.5 max-w-4xl'
