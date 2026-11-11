@@ -51,13 +51,6 @@ try {
     console.log(`   구간 안 ${inWin.length}건 → CEO/이사회 / 구간 밖 ${outWin.length}건 → 확인 필요(300억 연결 여부)`)
   })
 
-  await t('다른 부서 영향: 구간 안 기안마다 재무에 "집행 예정일 조정" 확인 요청이 자동 생성된다 (조정 시 승인권자 시뮬레이션 포함)', async () => {
-    const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
-    const p = plans.find((x) => x.payload.evaluation.facts.in_cash_breach_window === true)
-    const task = await infoTask(p.id, 'settlement_date')
-    assert.ok(task); assert.equal(task.assigneeRole, '재무'); assert.ok(task.detail.whatIf.authorityLabel); assert.equal(task.detail.dept, '재무')
-  })
-
   // ───────────── 상황 1: 정상 ─────────────
   await t('[상황 1 정상] 계약: CEO/이사회 승인 → 후속 작업 3개 → 모두 완료하면 안건이 닫힌다', async () => {
     const ap = (await view(contractId)).approvals.find((a) => a.status === 'pending')
@@ -126,28 +119,6 @@ try {
     assert.ok(outWin.every((p) => p.authority === 'masil_ceo'))
     assert.ok(outWin.every((p) => p.payload.evaluation.decision.also.includes('그룹 보고')))
     console.log(`   회신 ${res.length}건 반영 → 구간 밖 ${outWin.length}건은 Masil 대표 + 그룹 보고`)
-  })
-
-  await t('[다른 부서 영향] 재무가 집행일을 8/24(구간 밖)로 조정하면 → 승인권자가 CEO/이사회에서 Masil 대표로 내려가고 기존 요청은 대체된다', async () => {
-    const plans = await E.listCases(sql, { caseType: EXPANSION_CASE_TYPE })
-    const p = plans.find((x) => x.payload.evaluation.facts.in_cash_breach_window === true)
-    assert.equal(p.authority, 'ceo_board')
-    const task = await infoTask(p.id, 'settlement_date')
-    const r = await E.provideInfo(sql, cfg, task.id, { answers: { settlement_date: '2026-08-24' }, origin: '사용자입력', by: '재무팀(모의)' })
-    // 집행일이 구간 밖이 되어 CEO/이사회 사유는 사라졌지만, 이 기안은 300억 연결 여부를 아직 모른다 → 바로 확정하지 않고 다시 확인
-    assert.equal(r.decision.authority, 'masil_ceo'); assert.equal(r.authorityChanged, true); assert.equal(r.decision.status, 'need_info')
-    let v = await view(p.id)
-    assert.ok(v.approvals.some((a) => a.status === 'superseded' && a.requiredRole === 'ceo_board'))
-    assert.equal(v.approvals.filter((a) => a.status === 'pending').length, 0)
-    const link = await infoTask(p.id, 'linked_to_group_300')
-    assert.ok(link, '300억 연결 여부 확인 요청이 새로 생김')
-    const r2 = await E.provideInfo(sql, cfg, link.id, { answers: { linked_to_group_300: false }, origin: '사용자입력', by: '재무팀(모의)' })
-    assert.equal(r2.decision.status, 'decided')
-    v = await view(p.id)
-    assert.equal(v.approvals.filter((a) => a.status === 'pending')[0].requiredRole, 'masil_ceo')
-    // 제약은 남아 있다: 확정기한(계약)은 그대로이고, 새 집행일도 이력에 남는다
-    assert.equal(v.case.deadline, p.deadline)
-    assert.ok(v.events.some((e) => e.eventType === 'info_received' && e.detail.answers.settlement_date === '2026-08-24'))
   })
 
   await t('[승인 거절] 대표가 기안을 부결 → rejected + 재검토·전속계약 별개 확인 작업 → 재상신하면 새 승인 요청', async () => {

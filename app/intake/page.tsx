@@ -75,10 +75,10 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
   return (
     <AppShell>
       <div className="flex flex-col gap-3">
-        <PageHeader title="안건 접수" description="안건 제출(팀원)과 안건 접수(팀장)를 한 곳에서 해요. 팀원이 서류와 함께 제출하면 팀장에게 보고되고, 팀장이 체크리스트를 모두 확인해 접수하면 안건이 돼요." />
+        <PageHeader title="기안 접수" description="안건 제출(팀원)과 기안 접수(팀장)를 한 곳에서 해요. 팀원들이 서류와 함께 안건을 제출하면 팀장에게 보고되고, 팀장이 안건들을 하나의 기안으로 모아 체크리스트를 확인한 뒤 재무팀에 회부해요." />
         <div className="flex gap-1">
           {tabLink('submit', '안건 제출')}
-          {canAccept && tabLink('accept', '안건 접수', subs.filter((s) => s.status === 'pending').length)}
+          {canAccept && tabLink('accept', '기안 접수', subs.filter((s) => s.status === 'pending').length)}
         </div>
 
         {tab === 'submit' && (
@@ -92,7 +92,7 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
                 {user.roles.length === 0 ? (
                   <p className="t-small">역할이 있는 사람만 제출할 수 있어요.</p>
                 ) : (
-                  <SubmitForm categories={categories} kinds={ATTACHMENT_KINDS.map((k) => ({ id: k.id, label: k.label, required: k.required }))} />
+                  <SubmitForm categories={categories} kinds={ATTACHMENT_KINDS.map((k) => ({ id: k.id, label: k.label, required: k.required, requiredFor: k.requiredFor }))} />
                 )}
               </Card.Content>
             </Card>
@@ -148,6 +148,7 @@ async function AcceptTab({
 }) {
   const sel = waiting.find((s) => s.id === selectedId) ?? waiting[0]
   const files = sel ? await listFiles(sql, sel.id) : []
+  const draftOptions = (await sql`SELECT id, name FROM drafts ORDER BY id`).map((d) => ({ id: Number(d.id), name: String(d.name) }))
   const dups = sel ? await findOpenCasesFor(sql, sel.category, sel.refId) : []
   const bulkTotal = bulk.fresh.reduce((s, p) => s + Number(p.requested_budget_krw), 0)
 
@@ -187,8 +188,12 @@ async function AcceptTab({
         title: '첨부서류 (파일마다 열어 보고 체크)',
         rows: [
           ...files.map((f) => ({ id: fileCheckId(f.id), label: fileLabel(f), value: link(f), hint: '이 파일을 열어 내용을 확인했다' })),
-          ...(files.some((f) => f.kind === 'contract') || sel.category !== 'influencer' ? [] : [{ label: '계약서', value: <span className="t-caption">첨부 없음</span> }]),
-          ...(sel.category === 'influencer' ? [{ id: 'terms', label: '조건·기한 확인', value: `계약서 ${files.filter((f) => f.kind === 'contract').length}개 · 직접 추가 ${files.filter((f) => f.kind === CUSTOM_KIND).length}개에서 통보/체결 기한 ${v.contractDeadline} 과 조건을 확인`, hint: chk.terms }] : []),
+          ...(sel.category === 'influencer'
+            ? [
+                { id: 'terms', label: '계약서 내용', value: files.some((f) => f.kind === 'contract') ? '성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인' : <span className="text-danger">계약서 첨부 없음</span>, hint: chk.terms },
+                { id: 'notice', label: '통보 수령 증빙', value: files.some((f) => f.kind === 'notice') ? '실제로 통보를 받았다는 증빙인지 확인' : <span className="text-danger">통보 수령 증빙 첨부 없음</span>, hint: chk.notice },
+              ]
+            : []),
         ],
       },
       {
@@ -217,7 +222,21 @@ async function AcceptTab({
           <Card.Description>{cat.label} · 보고자 {sel.submittedBy} · {fmtDateTime(sel.createdAt)}</Card.Description>
         </Card.Header>
         <Card.Content>
-          <AcceptReview key={sel.id} id={sel.id} sections={sections} />
+          <AcceptReview
+            key={sel.id}
+            id={sel.id}
+            sections={sections}
+            drafts={draftOptions}
+            mustCheck={[
+              ...(sel.category === 'influencer'
+                ? [
+                    { id: 'terms', text: '계약서 첨부 확인 — 성과 피 정산 조건과 고정 피 금액이 표시돼 있는지' },
+                    { id: 'notice', text: '실제 통보 수령 증빙 첨부 확인' },
+                  ]
+                : []),
+              { id: 'calc', text: '공헌이익 산출 여부 확인' },
+            ]}
+          />
         </Card.Content>
       </Card>
     )

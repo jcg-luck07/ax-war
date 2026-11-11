@@ -1,6 +1,6 @@
 'use client'
 
-// 안건 목록 표 — 열마다 세로줄로 나뉘고, 열 제목 오른쪽 경계를 끌어서 폭을 늘이거나 줄일 수 있다 (글자는 잘리지 않고 줄바꿈된다).
+// 안건 목록 표 — 열마다 세로줄로 나뉘고, 열 제목 오른쪽 경계를 끌어서 폭을 늘이거나 줄일 수 있다 (칸보다 긴 글자는 줄바꿈하지 않고 잘린다 — 엑셀처럼. 마우스를 올리면 전체가 보인다).
 // 경계를 더블클릭하면 그 열 폭이 처음 값으로 돌아간다. 정한 폭은 이 브라우저에 기억된다.
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
@@ -58,8 +58,8 @@ export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-
                 className={`relative border-b border-r border-default px-3 py-1.5 font-semibold ${c.align === 'right' ? 'text-right' : 'text-left'}`}
                 aria-sort={c.sortDir ? (c.sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
               >
-                <Link href={c.sortHref} scroll={false} className="inline-flex items-center gap-1 break-words">
-                  {c.label}<span className="t-caption">{c.sortDir ? (c.sortDir === 'asc' ? '▲' : '▼') : ''}</span>
+<Link href={c.sortHref} scroll={false} className="flex items-center gap-1 whitespace-nowrap" title={c.label}>
+                  <span className="min-w-0 truncate">{c.label}</span><span className="t-caption shrink-0">{c.sortDir ? (c.sortDir === 'asc' ? '▲' : '▼') : ''}</span>
                 </Link>
                 {/* 열 경계: 끌어서 폭 조절, 더블클릭하면 처음 폭 */}
                 <span
@@ -96,7 +96,7 @@ export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-
             <tr key={r.id} className={`border-b border-default align-top ${r.selected ? 'bg-primary-soft' : 'hover:bg-surface'}`} aria-selected={r.selected}>
               {columns.map((c) => (
                 <td key={c.key} className={`border-r border-default p-0 ${c.key === 'title' ? 'font-semibold' : ''} ${c.align === 'right' ? 'text-right' : ''}`}>
-                  <Link href={r.href} scroll={false} className="block break-words px-3 py-1.5">{r.cells[c.key] ?? ''}</Link>
+                  <Link href={r.href} scroll={false} className="block truncate whitespace-nowrap px-3 py-1.5" title={r.cells[c.key] ?? ''}>{r.cells[c.key] ?? ''}</Link>
                 </td>
               ))}
             </tr>

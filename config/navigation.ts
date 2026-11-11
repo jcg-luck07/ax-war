@@ -25,7 +25,7 @@ export type NavItem = {
 export const NAVIGATION: NavItem[] = [
   { label: "할 일", href: "/inbox", icon: Tray },
   { label: "기안 목록", href: "/cases", icon: ListChecks },
-  { label: "안건 접수", href: "/intake", icon: FilePlus },
+  { label: "기안 접수", href: "/intake", icon: FilePlus },
   { label: "현금 재전망", href: "/cash", icon: Wallet, authorityOnly: true },
   { label: "용어 사전", href: "/model", icon: Database },
 ];

@@ -21,17 +21,9 @@ export interface W02Ctx extends HandlerCtx {
 }
 
 const BPMN = 'W02.bpmn (교육용 현재 업무)'
-const addDays = (d: string, n: number) => new Date(Date.parse(d) + n * 86_400_000).toISOString().slice(0, 10)
-const nextBusinessDay = (d: string) => {
-  let x = d
-  do x = addDays(x, 1)
-  while ([0, 6].includes(new Date(Date.parse(x)).getUTCDay()))
-  return x
-}
-
 type Payload = { facts?: Facts; plan?: { settlement_date?: string }; evaluation?: { decision?: AuthorityDecision } }
 
-function outflowDate(c: DecisionCase): string | null {
+export function outflowDate(c: DecisionCase): string | null {
   const p = c.payload as Payload
   const f = p.facts ?? {}
   if (c.caseType === EXPANSION_CASE_TYPE) return (f.settlement_date as string) ?? p.plan?.settlement_date ?? null
@@ -103,37 +95,7 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
     caseType: EXPANSION_CASE_TYPE,
     describeFact,
     deriveFacts: (c, ctx) => ({ in_cash_breach_window: inBreachWindow(c, ctx as W02Ctx) }),
-    // 다른 부서(재무)의 제약이 대안을 바꾸는 지점: 집행일이 하회 구간 안이면 재무에 '집행 시기 조정' 가능 여부를 묻는다.
-    onEvaluated: (c, _d, ctx0): TaskSpec[] => {
-      const ctx = ctx0 as W02Ctx
-      const prep = prepTasks(c.deadline, '계약 확정기한·전속계약 확인')
-      if (inBreachWindow(c, ctx) !== true) return prep
-      const date = outflowDate(c)!
-      const win = ctx.cashWindows!.find((w) => date >= w.start && date <= w.end)!
-      const suggested = nextBusinessDay(win.end)
-      const p = c.payload as Payload
-      const facts = { ...(p.facts ?? {}), in_cash_breach_window: false }
-      const alt = deps.decide(EXPANSION_CASE_TYPE, facts)
-      return [
-        ...prep,
-        {
-          key: 'finance-shift-settlement',
-          taskType: 'info_request',
-          title: '재무: 집행 예정일을 현금 하회 구간 밖으로 조정할 수 있는지 회신',
-          assigneeRole: '재무',
-          dueDate: c.deadline,
-          detail: {
-            fact: 'settlement_date',
-            question: `집행 예정일 ${date} 은 현금 하회 예상 구간(${win.start}~${win.end}) 안입니다. 구간이 끝난 뒤(예: ${suggested})로 늦출 수 있으면 날짜를, 늦출 수 없으면 현재 날짜를 그대로 알려 주세요.`,
-            answerFields: [{ name: 'settlement_date', type: 'date', label: '조정된 집행 예정일' }],
-            currentDate: date, windowStart: win.start, windowEnd: win.end, suggestedDate: suggested,
-            whatIf: { authority: alt.authority, authorityLabel: alt.authorityLabel, also: alt.also, note: '집행일이 구간 밖이 되면 승인권자가 이렇게 내려갑니다(300억 연결 여부가 확인된 경우).' },
-            dept: '재무', why: '다른 부서(재무)의 현금 제약이 이 기안의 집행 시기와 승인권자를 바꿈',
-          },
-          dataOrigin: '원본',
-        },
-      ]
-    },
+    onEvaluated: (c): TaskSpec[] => prepTasks(c.deadline, '계약 확정기한·전속계약 확인'),
     onDecision: (c, outcome): TaskSpec[] => {
       const p = c.payload as Payload
       const also = p.evaluation?.decision?.also ?? []

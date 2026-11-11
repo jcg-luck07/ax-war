@@ -4,12 +4,15 @@
 // 배포본은 인터넷에 공개되어 있으므로 로그인하지 않은 사람은 아무것도 바꿀 수 없다 (lib/app/auth.ts).
 import { revalidatePath } from 'next/cache'
 import {
-  EngineError, completeTask, decide, provideInfo, resubmitCase, updateFacts, type Outcome,
+  EngineError, completeTask, decide, getCaseView, provideInfo, resubmitCase, updateFacts, type Outcome,
 } from '@/lib/engine/engine'
-import { getEngine, roleLabel } from '@/lib/app/engine'
+import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canSubmitCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
 import { importExpansionPlans } from '@/lib/modules/w02/intake'
+import { contractRefer, financeRefer } from '@/lib/modules/w02/handoff'
+import { beyondGroupFundPeriod } from '@/lib/modules/w02/group-fund'
+import { outflowDate } from '@/lib/modules/w02/handlers'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { ROLES } from '@/lib/rules/authority.rules'
@@ -94,6 +97,29 @@ export async function completeTaskAction(input: { taskId: number }) {
   })
 }
 
+/** 재무팀 회부: 300억 배분 검토 대상 판정 + 성과·비용표 취합 완료 → 계약 담당에게 */
+export async function financeReferAction(input: { caseId: number; linked: boolean }) {
+  return guarded(async (user, sql) => {
+    if (!canHandle(user, '재무')) throw new EngineError('재무팀만 회부할 수 있어요.')
+    const { cfg } = await getEngine()
+    // 집행 예정일이 300억 집행 기준기간(향후 6개월)을 넘으면 검토 대상이 될 수 없다
+    if (input.linked && beyondGroupFundPeriod(outflowDate((await getCaseView(sql, input.caseId)).case), AS_OF)) {
+      throw new EngineError('집행 예정일이 300억 집행 기준기간(향후 6개월)을 넘어서 검토 대상으로 처리할 수 없어요.')
+    }
+    const r = await financeRefer(sql, cfg, input.caseId, { linked: input.linked, by: user.name })
+    return `계약 담당에게 회부했어요. 300억 배분 ${input.linked ? '검토 대상으로 처리' : '검토 대상 아님'} · 승인권자: ${r.authorityLabel ?? '확인 필요'}`
+  })
+}
+
+/** 계약 담당 회부: 계약서 첨부 + 계약 조건·기한 확인 완료 → 승인권자에게 */
+export async function contractReferAction(input: { caseId: number }) {
+  return guarded(async (user, sql) => {
+    if (!canHandle(user, '계약 담당')) throw new EngineError('계약 담당만 회부할 수 있어요.')
+    await contractRefer(sql, input.caseId, user.name)
+    return '승인권자에게 회부했어요.'
+  })
+}
+
 export async function resubmitAction(input: { caseId: number; reason: string }) {
   return guarded(async (user, sql) => {
     needRole(user)
@@ -128,15 +154,15 @@ export async function importPlansAction() {
 
 // 안건 제출(보고)은 파일 첨부가 있어 app/api/submissions 로 받는다. 접수·반려는 팀장(접수 권한자)이 한다.
 
-export async function acceptSubmissionAction(input: { id: number; checked: string[] }) {
+export async function acceptSubmissionAction(input: { id: number; checked: string[]; draftId?: number | null }) {
   return guarded(async (user, sql) => {
     const [row] = await sql`SELECT category FROM submissions WHERE id = ${input.id}`
     const cat = row ? categoryById(row.category as string) : undefined
     if (!cat) throw new EngineError('접수 대기 안건을 찾을 수 없어요')
     if (!canAcceptCategory(user, cat.acceptRole)) throw new EngineError(`${roleLabel(cat.acceptRole)} 이상만 접수할 수 있어요.`)
     const { cfg } = await getEngine()
-    const r = await acceptSubmission(sql, cfg, input.id, user.name, input.checked)
-    return `접수했어요 (안건 #${r.caseId}). ${r.needInfo ? '확인이 필요한 사실이 있어요.' : `승인권자: ${r.authorityLabel}`}`
+    const r = await acceptSubmission(sql, cfg, input.id, user.name, input.checked, input.draftId ?? null)
+    return `기안으로 접수하고 재무팀에 회부했어요 (안건 #${r.caseId}). ${r.needInfo ? '확인이 필요한 사실이 있어요.' : `승인권자: ${r.authorityLabel}`}`
   })
 }
 

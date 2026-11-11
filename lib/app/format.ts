@@ -69,7 +69,7 @@ export const ORIGIN: Record<string, { label: string; color: ChipColor }> = {
 }
 
 export const EVENT_LABEL: Record<string, string> = {
-  created: '안건 접수',
+  created: '기안 접수',
   evaluated: '규칙으로 평가',
   approval_requested: '승인 요청 생성',
   approval_superseded: '승인 요청 대체',

@@ -34,6 +34,7 @@ if (process.argv.includes('--clear')) {
     await sql`DELETE FROM approvals WHERE case_id IN ${sql(ids)}`
     await sql`DELETE FROM decision_cases WHERE id IN ${sql(ids)}`
   }
+  await sql`DELETE FROM drafts d WHERE NOT EXISTS (SELECT 1 FROM decision_cases c WHERE c.draft_id = d.id)` // 안건이 모두 지워져 껍데기만 남은 기안
   const s = await sql`DELETE FROM submissions WHERE submitted_by LIKE '[합성]%' RETURNING id`
   console.log(`합성 안건 ${ids.length}건, 접수 대기 ${s.length}건을 지웠어요.`)
   await sql.end()

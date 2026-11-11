@@ -79,10 +79,10 @@ export function buildNodeDetails(def: FlowDef, state: FlowState, view: CaseView,
         const evals = ev('evaluated')
         const chk = (view.case.payload as { submission?: { checklist?: { by: string; at: string; items: string[] } } }).submission?.checklist
         sections.push({
-          heading: '안건 접수 — 팀장이 팀원의 보고를 접수',
+          heading: '기안 접수 — 팀장이 팀원들의 안건을 모아 기안으로 등록',
           lines: [
             c ? `접수: ${who(c)}` : '',
-            `팀원이 올린 보고를 팀장(접수 권한자)이 받아 안건 #${view.case.id} 로 등록했어요.`,
+            `팀원이 올린 안건을 팀장(접수 권한자)이 받아 안건 #${view.case.id} 로 등록하고 재무팀에 회부했어요.`,
             '접수와 동시에 규칙집이 평가해서 승인권자를 정했어요:',
             ...ctx.ruleTrace.slice(0, 6).map((t) => `  ${t}`),
             ...(chk ? [`접수 체크리스트 ${chk.items.length}개 항목을 ${chk.by} 이(가) 모두 확인했어요 (${ctx.fmtTime(chk.at)}):`, ...chk.items.map((t) => `  ✔ ${t}`)] : []),

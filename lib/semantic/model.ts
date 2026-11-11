@@ -216,7 +216,7 @@ export const MASIL_MODEL: SemanticModel = {
       formula: 'Net Revenue − 제품원가 − 채널수수료 − 출고(배송)비 − 반품 물류비 − 마케팅 지출 (쿠폰은 GMV 에 이미 반영되어 다시 빼지 않음)',
       unit: '원', basis: '주문 집단 기준. 원가·배송비는 주문 1건에 적용 단위(가정)만큼, 반품 물류비는 환불 건에만 적용',
       sources: ['calculation_definitions.md 1.4', 'A05 5장', '02_masil/marketing/mkt_cost_master_ms.csv'], origin: '원본 정의',
-      caveats: [SAMPLE, '주문 행에 수량이 없어 "주문당 적용 단위"는 가정이다.', '환불 시 원가·수수료 회수는 자료가 없어 기본은 회수하지 않음.', '긴급배송 추가비용·CS 문의 비용은 원본에 항목도 데이터도 없어 빠져 있다 → 실제보다 낙관적일 수 있다.'],
+      caveats: [SAMPLE, '[적용 근거] calculation_definitions.md 1.4 의 산식에는 쿠폰 할인(Coupon Discount)과 반품환불액(Return Refund)이 별도 차감 항목으로 적혀 있지만, 같은 문서가 GMV 를 "쿠폰 반영 후·VAT 제외", Net Revenue 를 "GMV − 반품환불액"으로 정의하므로 두 항목은 Net Revenue 에 이미 반영돼 있다고 보고 다시 빼지 않았다(이중 차감 방지). data_dictionary.md 의 산식에도 반품환불액 항목이 따로 없다. 산식 문구를 글자 그대로 적용하면 환불을 두 번 빼게 되어 값이 크게 달라지므로, 주최 측 확인이 필요한 해석이다.', '[성과 피 미포함] 마케팅 지출은 문서 정의대로 mkt_ad_spend_ms.csv 의 ad_cost_krw 전액(인플루언서·퍼포먼스·오프라인)이다. 인플루언서 매체 비용은 influencer_fee_krw 와 같은 값으로 기록돼 있어 그 전액이 차감되지만, 이 값이 고정 피인지 성과 연동분까지 포함하는지는 데이터로 구분되지 않는다. 계약서의 성과 피(GMV 연동, 별도 정산)는 금액·요율 자료가 없고 이중 차감 위험이 있어 더하지 않았다 → 성과 피가 별도 정산이라면 실제 공헌이익은 이보다 낮을 수 있다(낙관적).', '주문 행에 수량이 없어 "주문당 적용 단위"는 가정이다.', '환불 시 원가·수수료 회수는 자료가 없어 기본은 회수하지 않음.', '긴급배송 추가비용·CS 문의 비용은 원본에 항목도 데이터도 없어 빠져 있다 → 실제보다 낙관적일 수 있다.'],
     },
     nominal_roas: {
       id: 'nominal_roas', label: '명목 ROAS', expr: 'gmv / nullif(ad_spend, 0)', formula: 'GMV / 마케팅 지출', unit: '배',

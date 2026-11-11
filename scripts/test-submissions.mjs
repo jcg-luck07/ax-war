@@ -17,6 +17,7 @@ const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const user = (roles) => ({ authenticated: true, email: 'x', name: 'x', roles, isAdmin: false })
 const doc = (kind, name = `${kind}.txt`) => ({ kind, filename: name, mime: 'text/plain', content: Buffer.from(`시험 ${kind}`) })
 const REQUIRED_FILES = ['draft', 'estimate'].map((k) => doc(k))
+const INF_FILES = [...REQUIRED_FILES, doc('contract'), doc('notice')] // 전속계약은 계약서와 통보 수령 증빙도 필수
 const custom = (label, name = `${label}.txt`) => ({ ...doc('custom', name), label })
 const CONTRIB = { gmv: '100000000', refund: '10000000', cogs: '30000000', channelFee: '7000000', shipping: '4000000', returnLogistics: '1000000' }
 const campaignValues = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-10', requested: '15000000', memo: '시험', ...CONTRIB, ...over })
@@ -100,7 +101,7 @@ try {
     assert.ok(checksFor('influencer').some((c) => c.id === 'terms')); assert.ok(!checksFor('campaign').some((c) => c.id === 'terms'))
     const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-22', requested: '800000000', currentExpiry: '2026-09-30', memo: '시험', ...CONTRIB }
     await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...values, currentExpiry: '' }, files: REQUIRED_FILES, by: '팀원' }), /현 계약 만료일/)
-    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values, files: [...REQUIRED_FILES, doc('contract')], by: '팀원' })
+    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values, files: INF_FILES, by: '팀원' })
     const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
     const v = await E.getCaseView(sql, r.caseId)
     assert.equal(v.case.caseType, 'w02.contract_renewal'); assert.equal(v.case.authority, 'masil_ceo', '연 8억 + 지급일 구간 밖 → Masil 대표')
@@ -115,7 +116,7 @@ try {
   })
   await t('신규 ID: 원본에 없는 인플루언서·캠페인 ID 로 제출·접수할 수 있고, 이름·형식·중복을 검사한다', async () => {
     const inf = (over = {}) => ({ settlementDate: '2026-09-15', contractDeadline: '2026-07-26', requested: '300000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새별', ...over })
-    const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: REQUIRED_FILES, by: '팀원' })
+    const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: category === 'influencer' ? INF_FILES : REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go(inf({ refName: '' })), /이름/)
     await assert.rejects(() => go(inf(), 'INF-1'), /형식/)
     await assert.rejects(() => go(inf(), 'INF-001'), /이미 있는 ID/)
@@ -143,10 +144,53 @@ try {
   })
   await t('첨부 종류: 기안서·추계서는 필수, 계약서는 선택이고, 그 밖에는 종류 이름을 직접 적어 여러 개 추가할 수 있다', async () => {
     assert.deepEqual(ATTACHMENT_KINDS.filter((k) => k.required).map((k) => k.id), ['draft', 'estimate'])
-    assert.deepEqual(ATTACHMENT_KINDS.filter((k) => !k.required).map((k) => k.id), ['contract'])
+    assert.deepEqual(ATTACHMENT_KINDS.filter((k) => !k.required).map((k) => k.id), ['contract', 'notice'])
     const s = await submit({ refId: 'CMP-0006', files: [...REQUIRED_FILES, custom('예상 GMV', 'gmv.csv'), custom('예상 GMV', 'gmv2.csv'), custom('주문 기록', 'orders.csv')] })
     const f = await listFiles(sql, s.id)
     assert.deepEqual(f.filter((x) => x.kind === 'custom').map((x) => `${x.label}:${x.filename}`).sort(), ['예상 GMV:gmv.csv', '예상 GMV:gmv2.csv', '주문 기록:orders.csv'])
+  })
+
+  await t('기안 접수 → 재무팀 회부(300억 판정) → 계약 담당 회부(계약서 첨부) → 승인권자 결정 순서로만 흘러간다', async () => {
+    // 전속계약은 계약서·통보 수령 증빙이 없으면 재무팀에 회부할 수 없다
+    const bare = await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: INF_FILES, by: '팀원' })
+    await sql`DELETE FROM submission_files WHERE submission_id = ${bare.id} AND kind = 'notice'`
+    const bareChecks = await allChecks(bare.id, 'influencer')
+    await assert.rejects(() => acceptSubmission(sql, cfg, bare.id, '팀장', bareChecks), /통보 수령 증빙/)
+    await sql`INSERT INTO submission_files (submission_id, kind, filename, mime, size, content) VALUES (${bare.id}, 'notice', 'notice.txt', 'text/plain', 3, ${Buffer.from('abc')})`
+    // 팀원들이 올린 안건을 하나의 기안에 모아 접수한다
+    const first = await submit({ refId: 'CMP-0007' })
+    const r1 = await acceptSubmission(sql, cfg, first.id, '팀장', await allChecks(first.id, 'campaign'))
+    const [d1] = await sql`SELECT draft_id FROM decision_cases WHERE id = ${r1.caseId}`
+    const second = await submit({ refId: 'CMP-0008' })
+    const r2 = await acceptSubmission(sql, cfg, second.id, '팀장', await allChecks(second.id, 'campaign'), Number(d1.draft_id))
+    const [d2] = await sql`SELECT draft_id FROM decision_cases WHERE id = ${r2.caseId}`
+    assert.equal(d2.draft_id, d1.draft_id, '같은 기안에 모인다')
+    const third = await submit({ refId: 'CMP-0009' })
+    const thirdChecks = await allChecks(third.id, 'campaign')
+    await assert.rejects(() => acceptSubmission(sql, cfg, third.id, '팀장', thirdChecks, 99999), /기안/)
+
+    const { financeRefer, contractRefer, addCaseFile, listCaseFiles } = await import('@/lib/modules/w02/handoff')
+    const v0 = await E.getCaseView(sql, r2.caseId)
+    assert.equal(v0.approvals.find((a) => a.status === 'pending'), undefined, '300억 연결 여부를 모르면 승인권자가 정해지지 않아 승인 요청도 없다')
+    // 재무 회부 전에는 계약서를 올릴 수도, 계약 담당이 회부할 수도 없다
+    await assert.rejects(() => contractRefer(sql, r2.caseId, '계약 담당'), /재무팀 회부 전|계약서/)
+    // 재무 회부: 300억 검토 대상으로 처리 → 승인권자가 CEO/이사회
+    const f = await financeRefer(sql, cfg, r2.caseId, { linked: true, by: '재무팀' })
+    assert.equal(f.authorityLabel, 'CEO/이사회')
+    await assert.rejects(() => financeRefer(sql, cfg, r2.caseId, { linked: true, by: '재무팀' }), /재무팀이 처리할 단계가 아니에요/)
+    // 계약 담당: 계약서 없이는 회부할 수 없다
+    await assert.rejects(() => contractRefer(sql, r2.caseId, '계약 담당'), /계약서를 먼저/)
+    await addCaseFile(sql, { caseId: r2.caseId, kind: 'contract', filename: 'contract.txt', mime: 'text/plain', content: Buffer.from('계약서'), by: '계약 담당' })
+    assert.equal((await listCaseFiles(sql, r2.caseId)).length, 1)
+    await contractRefer(sql, r2.caseId, '계약 담당')
+    const v1 = await E.getCaseView(sql, r2.caseId)
+    const ap2 = v1.approvals.find((a) => a.status === 'pending')
+    assert.equal(ap2.requiredRole, 'ceo_board')
+    const dec = await E.decide(sql, cfg, ap2.id, { outcome: 'approved', byRole: 'ceo_board', byName: 'CEO' })
+    assert.equal(dec.outcome, 'approved')
+    // 300억 '대상 아님'으로 정한 안건은 승인권자가 평시 규정을 따른다
+    const f2 = await financeRefer(sql, cfg, r1.caseId, { linked: false, by: '재무팀' })
+    assert.notEqual(f2.authorityLabel, null)
   })
 
   console.log(`\n${n}개 시험 모두 통과`)

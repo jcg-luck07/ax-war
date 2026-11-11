@@ -137,19 +137,20 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                 deadline: d.deadline ? `${d.deadline} (${ddayText(daysUntil(d.deadline, AS_OF))})` : '—',
               },
             }))}
-            emptyText="기안이 없어요. 안건 접수에서 새 안건을 받으세요."
+            emptyText="기안이 없어요. 기안 접수에서 새 안건을 받으세요."
           />
         </div>
 
         {/* 2) 선택한 기안 안의 안건 */}
         {draft ? (
           <>
-            <CaseFilters types={Object.entries(CATEGORY_LABEL).map(([id, label]) => ({ id, label }))} states={states} />
+            {/* 필터와 안건 표는 한 상자 안에 둔다 — 필터가 이 표에만 걸린다는 것이 한눈에 보이도록 */}
             <div className="border border-default" style={{ borderRadius: 2 }}>
               <div className="flex items-baseline justify-between px-3 py-1.5">
                 <span className="t-small font-semibold">{draft.name} 안의 안건 {rows.length}건{rows.length !== inDraft.length ? ` (기안 전체 ${inDraft.length}건 중)` : ''}</span>
                 <span className="t-caption">정렬: {COLUMNS.find((c) => c.key === sort)?.label} {dir === 1 ? '▲' : '▼'}</span>
               </div>
+              <CaseFilters bare types={Object.entries(CATEGORY_LABEL).map(([id, label]) => ({ id, label }))} states={states} />
               {/* 목록이 길어져도 업무 흐름표가 멀어지지 않도록 일정 높이에서 안쪽으로 스크롤. 열은 세로줄로 나뉘고 경계를 끌어 폭을 바꿀 수 있다 */}
               <CaseTable
                 columns={COLUMNS.map((c) => ({

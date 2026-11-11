@@ -10,7 +10,8 @@ import { formatDateInput } from '@/lib/app/date-input'
 const INPUT = 'rounded-input border border-default bg-content px-2 py-1 t-small'
 const KEYS = ['type', 'state', 'basis', 'from', 'to', 'q'] as const
 
-export function CaseFilters({ types, states }: { types: { id: string; label: string }[]; states: { value: string; label: string }[] }) {
+/** bare: 안건 표와 같은 상자 안에 넣을 때 — 바깥 테두리 없이 아래 줄만 둔다 */
+export function CaseFilters({ types, states, bare = false }: { types: { id: string; label: string }[]; states: { value: string; label: string }[]; bare?: boolean }) {
   const router = useRouter()
   const path = usePathname()
   const sp = useSearchParams()
@@ -30,10 +31,10 @@ export function CaseFilters({ types, states }: { types: { id: string; label: str
   const reset = () => { const empty = { type: '', state: '', basis: 'settle', from: '', to: '', q: '' }; setV(empty); go({ ...empty, basis: '' }) }
 
   return (
-    <div className="border border-default" style={{ borderRadius: 2 }}>
+    <div className={bare ? 'border-t border-default' : 'border border-default'} style={bare ? undefined : { borderRadius: 2 }}>
       <button type="button" className="flex w-full items-center gap-2 px-3 py-1.5 text-left" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
         {open ? <CaretDown size={14} /> : <CaretRight size={14} />}
-        <span className="t-small font-semibold">필터</span>
+        <span className="t-small font-semibold">검색 필터</span>
         <span className="t-caption">{active > 0 ? `${active}개 조건 적용 중` : '조건 없음'}</span>
       </button>
       {open && (

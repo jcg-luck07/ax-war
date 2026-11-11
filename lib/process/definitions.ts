@@ -1,5 +1,5 @@
 // 업무 흐름 선언. 모양은 W02.bpmn / W02.svg(교육용 현재 업무)를 따른다:
-//   업무 발생(동그라미) → 안건 접수 → 성과·비용표 취합(재무) → 계약조건·기한 확인(계약 담당) → 승인됐는가?(마름모, 승인권자)
+//   업무 발생(동그라미) → 기안 접수 → 성과·비용표 취합(재무) → 계약조건·기한 확인(계약 담당) → 승인됐는가?(마름모, 승인권자)
 //   → 예: 승인 후속 작업 → 종료 / 아니오: 기한 전 재검토 → 종료
 // 표기: 동그라미 = 시작·종료, 둥근 사각형 = 활동, 마름모 = 조건 분기. 가로 구역 = 담당 역할.
 // W02.bpmn 의 단계와 역할은 주최 측의 교육용 가정이다(세계관_BPMN/W02.html). 원본에 없는 단계(보류 사유 확인 등)는 우리가 더한 것이다.
@@ -21,8 +21,8 @@ export const CONTRACT_FLOW: FlowDef = {
   lanes: CONTRACT_LANES,
   nodes: [
     { id: 'start', kind: 'start', label: '업무 발생', lane: 'marketing', col: 0, bind: { t: 'start' } },
-    { id: 'accept', kind: 'task', label: '안건 접수', lane: 'marketing', col: 1, bind: { t: 'accept' } },
-    { id: 'collect', kind: 'task', label: '성과·비용표 취합', lane: 'finance', col: 2, bind: { t: 'prep', key: 'collect-performance', infoKeys: ['info:', 'finance-shift-settlement'] } },
+    { id: 'accept', kind: 'task', label: '기안 접수', lane: 'marketing', col: 1, bind: { t: 'accept' } },
+    { id: 'collect', kind: 'task', label: '성과·비용표 취합', lane: 'finance', col: 2, bind: { t: 'prep', key: 'collect-performance', infoKeys: ['info:'] } },
     { id: 'confirm', kind: 'task', label: '계약조건·기한 확인', lane: 'contract', col: 3, bind: { t: 'prep', key: 'confirm-terms' } },
     { id: 'decide', kind: 'gateway', label: '갱신안이 승인됐는가?', lane: 'approver', col: 4, bind: { t: 'decision' } },
     { id: 'doc', kind: 'task', label: '승인조건 문서화', lane: 'contract', col: 5, bind: { t: 'task', key: 'doc-conditions', branch: 'approved' } },
@@ -58,8 +58,8 @@ export const EXPANSION_FLOW: FlowDef = {
   lanes: CONTRACT_LANES,
   nodes: [
     { id: 'start', kind: 'start', label: '업무 발생', lane: 'marketing', col: 0, bind: { t: 'start' } },
-    { id: 'accept', kind: 'task', label: '안건 접수', lane: 'marketing', col: 1, bind: { t: 'accept' } },
-    { id: 'collect', kind: 'task', label: '성과·비용표 취합', lane: 'finance', col: 2, bind: { t: 'prep', key: 'collect-performance', infoKeys: ['info:', 'finance-shift-settlement'] }, hint: '300억 연결·집행일 회신 포함' },
+    { id: 'accept', kind: 'task', label: '기안 접수', lane: 'marketing', col: 1, bind: { t: 'accept' } },
+    { id: 'collect', kind: 'task', label: '성과·비용표 취합', lane: 'finance', col: 2, bind: { t: 'prep', key: 'collect-performance', infoKeys: ['info:'] }, hint: '300억 배분 검토 대상 판정' },
     { id: 'confirm', kind: 'task', label: '계약 확정기한·전속계약 확인', lane: 'contract', col: 3, bind: { t: 'prep', key: 'confirm-terms' } },
     { id: 'decide', kind: 'gateway', label: '기안이 승인됐는가?', lane: 'approver', col: 4, bind: { t: 'decision' } },
     { id: 'prepare', kind: 'task', label: '집행 준비', lane: 'marketing', col: 5, bind: { t: 'task', key: 'prepare-execution', branch: 'approved' } },

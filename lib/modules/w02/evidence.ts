@@ -70,7 +70,6 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
     if (facts.in_cash_breach_window === true && ctx.cash?.windows.length) {
       const w = ctx.cash.windows[0]
       evidence.push({ label: '현금 하회 예상 구간', value: `${fmtDateStr(w.start)} ~ ${fmtDateStr(w.end)}`, note: '집행 예정일이 이 구간 안' })
-      alternatives.push('재무와 협의해 집행 예정일을 하회 구간이 끝난 뒤로 조정한다 (조정되면 승인권자가 낮아질 수 있음)')
     }
     alternatives.push('부결하고 전속계약은 별도로 결정한다 (기안을 부결해도 전속계약은 갱신될 수 있음)')
     caveats.push('이 기안은 현금 재전망의 유출 산식에 포함되지 않아 부결해도 전망상 최저 잔액이 바뀌지 않는다. 마케팅은 자금 문제의 해법이 아니다.')

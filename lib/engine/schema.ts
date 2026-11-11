@@ -138,6 +138,22 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
 
   await sql`ALTER TABLE submission_files ADD COLUMN IF NOT EXISTS label text` // 직접 적은 첨부 종류 이름 (kind = 'custom')
 
+  // ⑤-4 안건에 직접 붙인 첨부파일 — 업무 흐름 중간에 담당 부서가 올리는 서류 (예: 계약 담당이 올리는 계약서)
+  await sql`
+    CREATE TABLE IF NOT EXISTS case_files (
+      id          serial      PRIMARY KEY,
+      case_id     integer     NOT NULL,
+      kind        text        NOT NULL,
+      filename    text        NOT NULL,
+      mime        text        NOT NULL,
+      size        integer     NOT NULL,
+      content     bytea       NOT NULL,
+      uploaded_by text        NOT NULL,
+      created_at  timestamptz NOT NULL DEFAULT now()
+    )
+  `
+  await sql`CREATE INDEX IF NOT EXISTS case_files_case_idx ON case_files (case_id)`
+
   // ⑥ 원본 행 복사본 — CSV 한 줄을 그대로 담는다. 원본 파일은 읽기만 하고 절대 고치지 않는다.
   await sql`
     CREATE TABLE IF NOT EXISTS source_rows (

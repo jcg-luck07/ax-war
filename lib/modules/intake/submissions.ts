@@ -59,12 +59,15 @@ export const CATEGORIES: Category[] = [
 
 export const categoryById = (id: string) => CATEGORIES.find((c) => c.id === id)
 
-/** 첨부서류 종류. required 는 없으면 제출할 수 없다. */
-export const ATTACHMENT_KINDS = [
+/** 첨부서류 종류. required 는 없으면 제출할 수 없다. requiredFor 는 그 분류에서만 필수다. */
+export const ATTACHMENT_KINDS: { id: string; label: string; required: boolean; requiredFor?: CategoryId[] }[] = [
   { id: 'draft', label: '기안서', required: true },
   { id: 'estimate', label: '비용 및 성과 추계서', required: true },
-  { id: 'contract', label: '계약서', required: false },
-] as const
+  { id: 'contract', label: '계약서', required: false, requiredFor: ['influencer'] },
+  { id: 'notice', label: '통보 수령 증빙', required: false, requiredFor: ['influencer'] },
+]
+/** 이 분류에서 꼭 첨부해야 하는 종류 */
+export const requiredKinds = (category: string) => ATTACHMENT_KINDS.filter((k) => k.required || k.requiredFor?.includes(category as CategoryId))
 
 /** 그 밖의 첨부 — 종류 이름을 제출하는 사람이 직접 적는다 (예: 예상 GMV, 주문기록 …). 여러 개 가능 */
 export const CUSTOM_KIND = 'custom'
@@ -75,13 +78,14 @@ export const MAX_FILES = 12
 
 /** 팀장이 접수하기 전에 하나씩 확인해야 하는 항목. 첨부서류는 파일마다 따로 확인한다(id `file:<파일번호>`). 모두 확인해야 접수할 수 있다 (서버도 다시 확인한다). */
 export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'new' }[] = [
-  { id: 'terms', label: '계약서 등 상대방과 관련된 서류에서 통보 기한과 조건을 확인했다 (첨부가 없으면 없다는 사실을 확인했다)', only: 'influencer' },
+  { id: 'terms', label: '계약서가 첨부돼 있고, 성과 피 정산 조건과 고정 피 금액이 계약서에 표시돼 있다', only: 'influencer' },
+  { id: 'notice', label: '실제 통보 수령 증빙(통보서·메일 등)이 첨부돼 있다', only: 'influencer' },
   { id: 'ref', label: '분류 ID가 맞고, 안건 내용이 그 대상(인플루언서·캠페인)에 대한 것이다' },
   { id: 'newref', label: '신규 ID: 전사 ID 규칙에 맞고, 이름(·소속 인플루언서)이 맞으며, 기존 ID와 겹치지 않는다', only: 'new' },
   { id: 'deadline', label: '계약 체결 기한을 확인했고, 남은 기간 안에 승인까지 끝낼 수 있다' },
   { id: 'settle', label: '지급 예정일(돈이 나가는 날)이 기안서와 일치한다' },
   { id: 'amount', label: '요청금액이 기안서·추계서와 일치한다' },
-  { id: 'calc', label: '공헌이익 계산 입력값을 추계서와 대조했고, 결과(양수·음수)를 확인했다' },
+  { id: 'calc', label: '공헌이익이 산출돼 있고, 계산 입력값을 추계서와 대조했으며, 결과(양수·음수)를 확인했다' },
   { id: 'dup', label: '같은 대상으로 이미 진행 중인 안건이 없다' },
   { id: 'memo', label: '메모와 특이사항을 읽었다' },
 ]
@@ -194,7 +198,7 @@ export async function submitIntake(
 
   // 첨부
   if (input.files.length > MAX_FILES) throw new EngineError(`첨부파일은 ${MAX_FILES}개까지 올릴 수 있어요`)
-  for (const k of ATTACHMENT_KINDS.filter((x) => x.required)) {
+  for (const k of requiredKinds(cat.id)) {
     if (!input.files.some((f) => f.kind === k.id)) throw new EngineError(`${k.label} 을(를) 첨부해 주세요`)
   }
   for (const f of input.files) {
@@ -262,7 +266,7 @@ export async function findOpenCasesFor(sql: Sql, category: CategoryId, refId: st
 
 /** 접수: 체크리스트를 모두 확인했을 때만 안건으로 만든다. 만들면 규칙집이 바로 평가한다. */
 export async function acceptSubmission(
-  sql: Sql, cfg: EngineConfig, id: number, by: string, checked: string[],
+  sql: Sql, cfg: EngineConfig, id: number, by: string, checked: string[], draftId: number | null = null,
 ): Promise<{ caseId: number; authorityLabel: string | null; needInfo: boolean }> {
   const [row] = await sql`SELECT * FROM submissions WHERE id = ${id}`
   if (!row) throw new EngineError('접수 대기 안건을 찾을 수 없어요')
@@ -275,6 +279,12 @@ export async function acceptSubmission(
     ...files.filter((f) => !checked.includes(fileCheckId(f.id))).map((f) => `첨부 ${f.filename}`),
   ]
   if (missing.length > 0) throw new EngineError(`확인하지 않은 항목이 있어요: ${missing.join(' / ')}`)
+  // 전속계약은 계약서와 실제 통보 수령 증빙이 첨부돼 있어야 재무팀에 회부할 수 있다 (없으면 반려해 팀원이 다시 올린다)
+  if (s.category === 'influencer') {
+    if (!files.some((f) => f.kind === 'contract')) throw new EngineError('계약서가 첨부되지 않았어요. 반려해서 팀원이 다시 올리게 해 주세요')
+    if (!files.some((f) => f.kind === 'notice')) throw new EngineError('실제 통보 수령 증빙이 첨부되지 않았어요. 반려해서 팀원이 다시 올리게 해 주세요')
+  }
+  if (draftId !== null && (await sql`SELECT 1 FROM drafts WHERE id = ${draftId}`).length === 0) throw new EngineError('고른 기안을 찾을 수 없어요')
 
   const v = s.input
   const contrib = contributionFromInput(v)
@@ -314,7 +324,9 @@ export async function acceptSubmission(
   }
   await sql`UPDATE decision_cases SET payload = payload || ${sql.json({ submission } as never)} WHERE id = ${res.caseId}`
   await sql`UPDATE submissions SET status = 'accepted', decided_by = ${by}, decided_at = now(), case_id = ${res.caseId} WHERE id = ${id}`
-  await assignDrafts(sql) // 접수된 안건은 새 기안 하나에 들어간다
+  // 기안 접수: 고른 기안에 묶어 넣거나(여러 팀원의 안건을 하나로 모음), 고르지 않으면 새 기안 하나로 등록된다
+  if (draftId !== null) await sql`UPDATE decision_cases SET draft_id = ${draftId} WHERE id = ${res.caseId}`
+  await assignDrafts(sql)
   return { caseId: res.caseId, authorityLabel: res.decision.authorityLabel, needInfo: res.decision.status !== 'decided' }
 }
 

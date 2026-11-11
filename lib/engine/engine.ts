@@ -535,5 +535,5 @@ export async function listPendingApprovals(sql: Sql): Promise<(ApprovalRow & { c
 export async function resetEngineData(sql: Sql): Promise<void> {
   const [{ db }] = await sql`SELECT current_database() AS db`
   if (!String(db).endsWith('_test')) throw new Error(`시험용 DB(이름이 _test 로 끝남)에서만 초기화할 수 있어요. 지금 DB: ${db}`)
-  await sql`TRUNCATE decision_cases, assumptions, submissions, submission_files, drafts RESTART IDENTITY CASCADE`
+  await sql`TRUNCATE decision_cases, assumptions, submissions, submission_files, case_files, drafts RESTART IDENTITY CASCADE`
 }

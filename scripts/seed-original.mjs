@@ -15,7 +15,7 @@ if (n === 0) throw new Error('원본 복사본이 DB 에 없어요. 먼저 node 
 
 // 안건·승인·작업·이력·접수 대기·첨부를 모두 지운다 (원본 복사본 source_rows 는 그대로).
 // resetEngineData 는 시험용 DB 에서만 쓰도록 막혀 있어서(엔진의 안전장치) 거기를 거치지 않고, 이 스크립트가 직접 지운다 — 원본으로 바꾸려고 일부러 부르는 스크립트이기 때문이다.
-await sql`TRUNCATE decision_cases, submissions, submission_files, drafts RESTART IDENTITY CASCADE`
+await sql`TRUNCATE decision_cases, submissions, submission_files, case_files, drafts RESTART IDENTITY CASCADE`
 
 const plans = await importExpansionPlans(sql, cfg, '원본 자료 (mkt_budget_plan_ms.csv)')
 const contract = await receiveContractNotice(sql, cfg, {

@@ -33,6 +33,8 @@ export interface KindView {
   id: string
   label: string
   required: boolean
+  /** 이 분류(예: influencer)에서만 필수 */
+  requiredFor?: string[]
 }
 
 /** 숫자만 쳐도 YYYY-MM-DD 로 만들어 준다 (하이픈은 자동) */
@@ -82,6 +84,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
 
   // 아직 남은 것 — 모두 채워야 제출할 수 있다
   const todo: string[] = []
+  const isRequired = (k: KindView) => k.required || Boolean(cat && k.requiredFor?.includes(cat.id))
   // 신규 인플루언서는 현 계약이 없어 '현 계약 만료일' 칸이 필요 없다
   const visibleFields = (cat?.fields ?? []).filter((f) => !(isNew && f.name === 'currentExpiry'))
   if (cat) {
@@ -93,7 +96,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
     }
     for (const f of visibleFields) if (f.required && !(vals[f.name] ?? '').trim()) todo.push(f.label)
     if (calcError) todo.push('공헌이익 계산 칸')
-    for (const k of kinds) if (k.required && !(files[k.id]?.length)) todo.push(`첨부: ${k.label}`)
+    for (const k of kinds) if (isRequired(k) && !(files[k.id]?.length)) todo.push(`첨부: ${k.label}`)
     extras.forEach((x, i) => { if (!x.label.trim() || x.files.length === 0) todo.push(`추가 첨부 ${i + 1}: ${!x.label.trim() ? '종류 이름' : '파일'}`) })
   }
 
@@ -202,7 +205,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
             <div className="flex flex-col">
               {kinds.map((k) => (
                 <div key={k.id} className={ROW}>
-                  <span className="t-small">{k.label} {k.required ? <span className="text-danger">*</span> : <span className="t-caption">(선택)</span>}</span>
+                  <span className="t-small">{k.label} {isRequired(k) ?<span className="text-danger">*</span> : <span className="t-caption">(선택)</span>}</span>
                   <FilePick files={files[k.id] ?? []} onChange={(list) => setFiles((x) => ({ ...x, [k.id]: list }))} />
                   <span />
                 </div>
@@ -287,11 +290,14 @@ export interface ReviewSection {
 }
 
 /** 팀장의 접수 검토 — 확인할 값이 있는 줄마다 왼쪽에 체크박스가 있고, 모두 체크해야 접수 버튼이 켜진다. 한 줄씩, 폭은 중간 정도로. */
-export function AcceptReview({ id, sections }: { id: number; sections: ReviewSection[] }) {
+export function AcceptReview({
+  id, sections, mustCheck, drafts,
+}: { id: number; sections: ReviewSection[]; mustCheck: { id: string; text: string }[]; drafts: { id: number; name: string }[] }) {
   const router = useRouter()
   const [pending, start] = useTransition()
   const [on, setOn] = useState<Record<string, boolean>>({})
   const [note, setNote] = useState('')
+  const [draftId, setDraftId] = useState('')
   const ids = sections.flatMap((s) => s.rows.filter((r) => r.id).map((r) => r.id as string))
   const done = ids.filter((x) => on[x]).length
   const all = done === ids.length
@@ -304,8 +310,21 @@ export function AcceptReview({ id, sections }: { id: number; sections: ReviewSec
 
   return (
     <div className="flex max-w-3xl flex-col gap-3">
+      {/* 마케팅 팀장이 꼭 확인할 일 — 확인하면 아래 체크박스를 누를 때 함께 체크 표시된다 */}
+      <div className="flex flex-col gap-1 border border-warning bg-warning-soft p-2" style={{ borderRadius: 2 }}>
+        <span className="t-small font-semibold">마케팅 팀장이 확인할 일</span>
+        <p className="t-caption">첨부 파일이 올라와 있는지, 아래 내용이 들어 있는지 확인해 주세요. 모두 확인해야 재무팀에 회부할 수 있어요.</p>
+        <ol className="flex flex-col gap-2 pl-1 pt-1">
+          {mustCheck.map((m, i) => (
+            <li key={m.id} className="flex gap-2 t-small">
+              <span className="w-5 shrink-0 font-semibold">{i + 1}.</span>
+              <span className={on[m.id] ? 'text-success' : ''}>{on[m.id] ? '✔ ' : ''}{m.text}</span>
+            </li>
+          ))}
+        </ol>
+      </div>
       <div className="flex items-baseline justify-between">
-        <span className="t-small font-semibold">접수 검토 — 각 항목을 확인하고 왼쪽에 체크하세요</span>
+        <span className="t-small font-semibold">기안 접수 검토 — 각 항목을 확인하고 왼쪽에 체크하세요</span>
         <span className="t-caption">{done} / {ids.length} 확인</span>
       </div>
       {sections.map((sec) => (
@@ -324,11 +343,21 @@ export function AcceptReview({ id, sections }: { id: number; sections: ReviewSec
           ))}
         </div>
       ))}
+      <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
+        <label className="flex items-center gap-2 t-small">
+          <span className="font-semibold">등록할 기안</span>
+          <select className={`${INPUT} w-auto max-w-xs`} value={draftId} onChange={(e) => setDraftId(e.target.value)}>
+            <option value="">새 기안으로 등록</option>
+            {drafts.map((d) => <option key={d.id} value={d.id}>{d.name} 에 추가</option>)}
+          </select>
+        </label>
+        <span className="t-caption">팀원들이 올린 안건을 같은 기안에 모아 등록할 수 있어요.</span>
+      </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Button isDisabled={pending || !all} onPress={() => run(() => acceptSubmissionAction({ id, checked: ids.filter((x) => on[x]) }))}>
-          안건 접수
+        <Button isDisabled={pending || !all} onPress={() => run(() => acceptSubmissionAction({ id, checked: ids.filter((x) => on[x]), draftId: draftId ? Number(draftId) : null }))}>
+          기안 접수 · 재무팀에 회부
         </Button>
-        {!all && <span className="t-caption">모든 항목을 확인해야 접수할 수 있어요.</span>}
+        {!all && <span className="t-caption">모든 항목을 확인해야 재무팀에 회부할 수 있어요.</span>}
       </div>
       <div className="flex flex-wrap items-center gap-2 border-t border-default pt-2">
         <input className={`${INPUT} max-w-xs`} placeholder="반려 사유 (선택)" value={note} onChange={(e) => setNote(e.target.value)} aria-label="반려 사유" />
