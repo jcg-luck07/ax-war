@@ -1,4 +1,3 @@
-import Link from 'next/link'
 import { Card } from '@heroui/react'
 import { AppShell } from '@/components/AppShell'
 import { CaseDetail } from '@/components/CaseDetail'

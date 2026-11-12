@@ -1,6 +1,11 @@
 import Link from 'next/link'
 import { Card } from '@heroui/react'
 import { Warning } from '@phosphor-icons/react/ssr'
+import { ProfitabilityCard } from '@/components/ProfitabilityCard'
+import { mockJudge } from '@/lib/modules/w02/ai-judgment'
+import { buildProfitability } from '@/lib/modules/w02/profitability'
+import { MASIL_MODEL } from '@/lib/semantic/model'
+import { entityRows } from '@/lib/semantic/run'
 import { Pill } from '@/components/bits'
 import { DecisionPanel, InfoReplyForm, ResubmitButton, TaskDoneButton } from '@/components/case-actions'
 import { ContractReferPanel, FinanceReferItems, NonrenewalRequestPanel, RecordReplyPanel, type CheckItem } from '@/components/handoff-panels'
@@ -13,14 +18,13 @@ import { LANES_OF_ROLE } from '@/lib/process/detail'
 import { canHandle, currentUser, decidingRole, roleLabels } from '@/lib/app/auth'
 import { flowForCaseType, flowWithoutGroupReport } from '@/lib/process/definitions'
 import { deriveFlowState } from '@/lib/process/state'
-import { makeBrief } from '@/lib/app/brief'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import {
   EVENT_LABEL, FACT_LABEL, TASK_TYPE, ddayText, fmtDateTime, fmtFact, fmtWon,
 } from '@/lib/app/format'
 import { tryPerformance } from '@/lib/app/queries'
 import { EngineError, daysUntil, getCaseView, type EventRow, type CaseView } from '@/lib/engine/engine'
-import { buildBriefInput, contractPackage, financePackage } from '@/lib/modules/w02/evidence'
+import { contractPackage } from '@/lib/modules/w02/evidence'
 import { ATTACHMENT_KINDS, CUSTOM_KIND, listFiles } from '@/lib/modules/intake/submissions'
 import { outflowDate, w02Notes, type W02Ctx } from '@/lib/modules/w02/handlers'
 import { beyondGroupFundPeriod, groupFundPeriodEnd } from '@/lib/modules/w02/group-fund'
@@ -84,7 +88,6 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   }
   const c = view.case
   const perf = await tryPerformance()
-  const brief = makeBrief(buildBriefInput(view, { asOf: AS_OF, perf, cash }))
   const notes = w02Notes(c, cfg.ctx as W02Ctx)
 
   const payload = c.payload as { evaluation?: { decision?: AuthorityDecision; facts?: Record<string, unknown> } }
@@ -157,11 +160,23 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   // 회부·승인 때 띄울 경고: 연관 안건에 부결이 있는가
   const warning = relatedWarning({ category: CASE_TYPE_CATEGORY[c.caseType] ?? null, influencerId: String(c.subjectRefs.influencer ?? ''), id: c.id }, allRows, String(influencerName))
 
-  const subCalc = (c.payload as { submission?: { calc?: { result: { contributionProfit: number; realRoas: number | null } } } }).submission?.calc
-  const primary = [
-    ...(subCalc ? [`제출 추계 공헌이익(팀원 입력, 가정): ${fmtWon(subCalc.result.contributionProfit)}${subCalc.result.realRoas === null ? '' : ` · 실질 ROAS ${subCalc.result.realRoas.toFixed(2)}배`}`] : []),
-    ...brief.reasons.filter((r) => r.startsWith('실질 공헌이익')),
-  ]
+  // 수익성 검증: 이 안건의 대상(인플루언서/캠페인)을 비교 대상과 나란히 놓고, AI 판단(시험용)을 붙인다
+  const subCalc = (c.payload as { submission?: { calc?: { inputs?: { gmv: number; refund: number; marketingSpend: number }; result: { netRevenue: number; contributionProfit: number } } } }).submission?.calc
+  const [campRows, infRows] = await Promise.all([
+    entityRows(sql, MASIL_MODEL, 'campaign').catch(() => []),
+    entityRows(sql, MASIL_MODEL, 'influencer').catch(() => []),
+  ])
+  const profData = buildProfitability({
+    kind: c.caseType === EXPANSION_CASE_TYPE ? 'campaign' : 'influencer',
+    influencerId: String(c.subjectRefs.influencer ?? ''),
+    campaignId: c.subjectRefs.campaign ? String(c.subjectRefs.campaign) : undefined,
+    perf,
+    campaigns: campRows.map((r) => ({ id: String(r.campaign_id), name: String(r.campaign_name), influencerId: String(r.influencer_id), productLine: String(r.product_line) })),
+    influencers: infRows.map((r) => ({ id: String(r.influencer_id), name: String(r.influencer_name), feeType: r.fee_type ? String(r.fee_type) : null })),
+    estimate: subCalc?.inputs
+      ? { cp: subCalc.result.contributionProfit, netRevenue: subCalc.result.netRevenue, gmv: subCalc.inputs.gmv, spend: subCalc.inputs.marketingSpend, refund: subCalc.inputs.refund }
+      : null,
+  })
   // 업무 발생 단계: 팀원이 올린 기록(접수 대기 테이블)이 있으면 보여 준다
   const subRef = (c.payload as { submission?: { id?: number } }).submission?.id
   // 팀원이 제출할 때 붙인 서류, 계약 담당이 올린 계약서
@@ -190,21 +205,32 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const beyondPeriod = beyondGroupFundPeriod(outDate, AS_OF) ? { date: outDate as string, end: groupFundPeriodEnd(AS_OF) } : null
   const lines = (list: string[]) => <>{list.map((l, i) => <p key={i} className="t-small">{l}</p>)}</>
   const contractLines = contractPackage(view, AS_OF).lines
-  // 빠진 자료 — 있어야 하는데 아직 없는 것을 다음 행동에서 알려 준다
-  const inf = perf?.byInfluencer.find((x) => x.influencerId === c.subjectRefs.influencer)
-  const missingProfit = primary.length > 0 ? null : !perf
-    ? '공헌이익이 산출되지 않았어요 — 원본 성과 자료가 DB 에 없어요'
-    : !inf
-      ? '공헌이익이 산출되지 않았어요 — 이 인플루언서의 기존 캠페인 실적이 없어요(신규 등)'
-      : '공헌이익이 산출되지 않았어요 — 제출된 추계 입력이 없어요'
   const feeInfo = (c.payload as { contract?: FeeInfo }).contract
   const contractAmount = Number(((c.payload as { evaluation?: { facts?: Record<string, unknown> } }).evaluation?.facts ?? {}).annual_contract_value_krw ?? 0)
   const feeKnown = c.caseType !== EXPANSION_CASE_TYPE && Boolean(feeInfo?.feeType) // 제출 때 계약 방식·금액을 입력한 전속계약
-  const missingTerms = hasInfluencer && !feeKnown ? '성과 조건(인플루언서 계약 비용과 조건, 성과 피가 몇 퍼센트인지 등)이 확인되지 않았어요 — 마케팅 부서에 회신을 요청해야 해요' : null
-  const missingOldContract = oldContracts.length === 0 ? '근거 자료가 될 기존 계약서가 첨부되지 않았어요 (선택 항목이라 없을 수 있어요)' : null
-  const financeMissing = [missingProfit, missingTerms, missingOldContract].filter((x): x is string => Boolean(x))
-  const contractMissing = [missingTerms, missingOldContract].filter((x): x is string => Boolean(x)) // 공헌이익은 계약 담당에게 보여 주지 않는다
-  const termsBody = lines([...(c.caseType !== EXPANSION_CASE_TYPE ? [`계약 방식·금액: ${feeText(feeInfo, contractAmount)}`] : []), ...contractLines, hasInfluencer && !feeKnown ? '성과 피 비율 등 성과 조건: 원본에 없어 확인되지 않음' : ''].filter(Boolean))
+  // 인플루언서의 보수 구조(원본 마스터): 고정 / 성과 / 고정+성과
+  const FEE_WORD: Record<string, string> = { 고정: '고정 피', 성과: '성과 피', '고정+성과': '혼합 피(고정 피 + 성과 피)' }
+  const masterFee = profData.subjectFeeType
+  const hasPerfFee = feeKnown ? feeInfo?.feeType !== '고정 피' : Boolean(masterFee?.includes('성과'))
+  // 빠진 자료 — 꼭 필요한 것만 짧게 알려 준다
+  const missingTerms = hasInfluencer && hasPerfFee && !feeKnown ? '성과 피 비율을 아직 몰라요 (마케팅에 확인 필요)' : null
+  const missingOldContract = oldContracts.length === 0 ? '기존 계약서 없음 (선택 항목)' : null
+  const financeMissing = [missingTerms, missingOldContract].filter((x): x is string => Boolean(x))
+  const contractMissing = financeMissing
+  // 재무팀: 계약 방식과 성과 피 비율만 (그 밖의 기한·조항 설명은 뺀다)
+  const termsBody = lines([
+    c.caseType !== EXPANSION_CASE_TYPE
+      ? `계약 방식: ${feeText(feeInfo, contractAmount, ((c.payload as { revisions?: unknown[] }).revisions?.length ?? 0) > 0)}`
+      : masterFee ? `인플루언서 계약 방식: ${FEE_WORD[masterFee] ?? masterFee}` : '',
+  ].filter(Boolean))
+  // 계약 담당: 계약 방식·금액, 통보(확정) 기한, 만료일, 위약금만
+  const penaltyLine = contractLines.join(' ').match(/갱신 후 중도 해지 시[^—,]*위약금/)?.[0]
+  const contractTerms = lines([
+    ...(c.caseType !== EXPANSION_CASE_TYPE ? [`계약 방식·금액: ${feeText(feeInfo, contractAmount, ((c.payload as { revisions?: unknown[] }).revisions?.length ?? 0) > 0)}`] : []),
+    `${c.caseType === EXPANSION_CASE_TYPE ? '계약 확정기한' : '통보 기한'}: ${c.deadline ?? '없음'}${c.deadline ? ` (${ddayText(daysUntil(c.deadline, AS_OF))})` : ''}`,
+    ...(c.caseType !== EXPANSION_CASE_TYPE && (c.payload as { contract?: { currentExpiry?: string | null } }).contract?.currentExpiry ? [`현 계약 만료일: ${(c.payload as { contract?: { currentExpiry?: string | null } }).contract?.currentExpiry}`] : []),
+    ...(penaltyLine ? [penaltyLine] : []),
+  ])
   // 수정 보고: 승인 또는 부결 뒤 금액만 바뀐 경우 — 원 금액·원 첨부는 그대로 두고 바뀐 금액과 추가 첨부를 더한다
   const revPayload = c.payload as { revisions?: RevisionRecord[]; originalAmount?: number; authorityLock?: string }
   const revisions = revPayload.revisions ?? []
@@ -217,12 +243,12 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const amountLabel = c.caseType === EXPANSION_CASE_TYPE ? '요청 금액' : '계약 금액'
   const revLine = (r: RevisionRecord) => `${r.no}차 수정 보고 — ${amountLabel} ${fmtWon(r.fromAmount)} → ${fmtWon(r.toAmount)} (${(r.pct * 100).toFixed(1)}% ${r.toAmount > r.fromAmount ? '증가' : '감소'}, ${r.route === 'direct' ? '승인권자에게 바로 보고' : '재무팀 절차부터 다시'})${r.reason ? ` · 사유: ${r.reason}` : ''}`
   const revisionNote = revisions.length > 0 ? lines([`원 ${amountLabel} ${fmtWon(originalAmount)} → 현재 ${fmtWon(currentAmount)}`, ...revisions.map(revLine)]) : null
+  const caseFileLabel = (k: string, rev?: number | null) => (k === 'contract' ? '계약서 (계약 담당)' : k === 'notice' ? '통보 회신 증빙 (계약 담당)' : k === 'revision' ? `수정 보고 첨부 (${rev ?? ''}차)` : k)
   const originalFileLinks: { href: string; label: string; size: number }[] = [
     ...subFiles.map((f) => ({ href: `/api/submission-files/${f.id}`, label: `${subFileLabel(f)} — ${f.filename}`, size: f.size })),
     ...caseFiles.map((f) => ({ href: `/api/case-files/${f.id}`, label: `${caseFileLabel(f.kind, f.revision)} — ${f.filename}`, size: f.size })),
   ]
   // 승인권자의 판단 근거: 공헌이익 + 첨부 파일(제출 때 있던 것 + 계약 담당이 올린 것)
-  const caseFileLabel = (k: string, rev?: number | null) => (k === 'contract' ? '계약서 (계약 담당)' : k === 'notice' ? '통보 회신 증빙 (계약 담당)' : k === 'revision' ? `수정 보고 첨부 (${rev ?? ''}차)` : k)
   const allFileLinks = (
     <div className="flex flex-col">
       {subFiles.map((f) => (
@@ -238,13 +264,20 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       {subFiles.length === 0 && caseFiles.length === 0 && <p className="t-caption">{subRef ? '첨부된 파일이 없어요.' : '원본 기안 파일에서 가져온 안건이라 첨부 파일이 없어요.'}</p>}
     </div>
   )
+  // 수익성 검증 대상 인플루언서·캠페인에 대한 AI 판단 (시험용 — 규칙으로 흉내). 계약 방식·고정 피 정보를 한계로 함께 판단한다
+  const infContractRow = relatedContracts[0]
+  const judgment = mockJudge(profData, {
+    fixedFeeKrw: c.caseType !== EXPANSION_CASE_TYPE ? (feeKnown ? feeInfo?.fixedFeeKrw ?? null : contractAmount || null) : (masterFee?.includes('고정') ? infContractRow?.amount ?? null : null),
+    performanceFeeKrw: feeKnown ? feeInfo?.performanceFeeKrw ?? null : null,
+    performanceRateUnknown: hasPerfFee,
+  })
   const decisionEvidence = (
     <div className="flex flex-col gap-3 border border-default p-2">
       <p className="t-small font-semibold">판단 근거</p>
       {revisionNote && <div className="flex flex-col gap-1"><p className="t-small font-semibold">수정 보고 (이 금액을 기준으로 판단해요)</p>{revisionNote}</div>}
       <div className="flex flex-col gap-1">
-        <p className="t-small font-semibold">공헌이익</p>
-        {lines(primary.length ? primary : [missingProfit ?? ''])}
+        <p className="t-small font-semibold">수익성 검증</p>
+        <ProfitabilityCard data={profData} judgment={judgment} stepLabel={approverName} isApprover />
       </div>
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">첨부 파일</p>
@@ -252,21 +285,91 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       </div>
     </div>
   )
+  // 계약 담당이 마지막 단계(통보·회신 기록 보관 / 집행 중단 처리 / 불연장 통지서 발송)에서 참고할 정보:
+  // 이전에 올라온 첨부 파일(공헌이익 자료인 추계서는 제외)과, 통보에 필요한 결정 내용·기한·상대방·계약 조건·같은 인플루언서의 전속계약
+  const lastDecided = [...view.approvals].reverse().find((a) => a.kind === 'main' && (a.status === 'approved' || a.status === 'rejected' || a.status === 'on_hold'))
+  const decisionWord = lastDecided?.status === 'approved' ? '승인' : lastDecided?.status === 'rejected' ? '부결' : lastDecided?.status === 'on_hold' ? '재검토' : null
+  const priorFiles = (
+    <div className="flex flex-col">
+      {subFiles.filter((f) => f.kind !== 'estimate').map((f) => (
+        <a key={`s${f.id}`} className="border-b border-default py-1 t-small underline" href={`/api/submission-files/${f.id}`}>
+          {subFileLabel(f)} — {f.filename} <span className="t-caption">({Math.max(1, Math.round(f.size / 1024))}KB)</span>
+        </a>
+      ))}
+      {caseFiles.filter((f) => f.kind !== 'notice').map((f) => (
+        <a key={`c${f.id}`} className="border-b border-default py-1 t-small underline" href={`/api/case-files/${f.id}`}>
+          {caseFileLabel(f.kind, f.revision)} — {f.filename} <span className="t-caption">({Math.max(1, Math.round(f.size / 1024))}KB)</span>
+        </a>
+      ))}
+      {subFiles.filter((f) => f.kind !== 'estimate').length === 0 && caseFiles.filter((f) => f.kind !== 'notice').length === 0 && (
+        <p className="t-caption">{subRef ? '이전에 올라온 첨부 파일이 없어요.' : '원본 기안 파일에서 가져온 안건이라 이전 첨부 파일이 없어요.'}</p>
+      )}
+    </div>
+  )
+  const daysLeft = daysUntil(c.deadline, AS_OF)
+  const closingInfo = (
+    <NumberedList
+      items={[
+        {
+          key: 'decision',
+          title: '결정 내용',
+          body: lastDecided ? (
+            <>
+              <p className="t-small"><strong>{decisionWord}</strong> — {lastDecided.decidedBy ?? roleLabel(lastDecided.requiredRole)}{lastDecided.decidedAt ? ` · ${fmtDateTime(lastDecided.decidedAt)}` : ''}</p>
+              {lastDecided.comment && <p className="t-small">결정 사유: {lastDecided.comment}</p>}
+            </>
+          ) : <p className="t-caption">결정 기록이 없어요.</p>,
+        },
+        {
+          key: 'dates',
+          title: '일정·기한',
+          body: lines([
+            `${c.caseType === EXPANSION_CASE_TYPE ? '계약 확정기한' : '통보 기한(계약 체결 기한)'}: ${c.deadline ?? '없음'}${c.deadline ? ` (${ddayText(daysLeft)})` : ''} — ${c.caseType === EXPANSION_CASE_TYPE ? '넘기면 자동 확정되어 철회할 수 없어요' : '넘기면 동일 조건으로 1년 자동 갱신(체결로 간주)돼요'}`,
+            ...(outDate ? [`지급 예정일: ${outDate}`] : []),
+            ...(c.caseType !== EXPANSION_CASE_TYPE && (c.payload as { contract?: { currentExpiry?: string | null } }).contract?.currentExpiry ? [`현 계약 만료일: ${(c.payload as { contract?: { currentExpiry?: string | null } }).contract?.currentExpiry}`] : []),
+          ]),
+        },
+        {
+          key: 'party',
+          title: '상대방·계약 조건',
+          body: lines([
+            hasInfluencer ? `상대방: ${influencerName} (${c.subjectRefs.influencer}) — 소속 에이전시 정보는 원본에 없어요` : '상대방: 연결된 인플루언서가 없어요',
+            ...(c.caseType !== EXPANSION_CASE_TYPE ? [`계약 방식·금액: ${feeText(feeInfo, contractAmount, revisions.length > 0)}`] : currentAmount > 0 ? [`요청 금액: ${fmtWon(currentAmount)}`] : []),
+            ...contractLines.filter((l) => /위약금|계약 형태|보수/.test(l)),
+          ]),
+        },
+        ...(c.caseType === EXPANSION_CASE_TYPE || relatedContracts.length > 0
+          ? [{
+              key: 'contracts',
+              title: '같은 인플루언서의 전속계약 (별개 결정이므로 통보 기한을 함께 확인)',
+              body: relatedContracts.length === 0 ? <p className="t-caption">연결된 전속계약 안건이 없어요.</p> : (
+                <>
+                  {relatedContracts.map((r) => (
+                    <p key={r.id} className="t-small">
+                      {r.code || '—'} {r.title} — {r.feeText ?? ''} · 기한 {r.deadline ?? '없음'}{r.deadline ? ` (${ddayText(daysUntil(r.deadline, AS_OF))})` : ''} · <strong>{r.decisionLabel}</strong> ({r.state})
+                    </p>
+                  ))}
+                </>
+              ),
+            }]
+          : []),
+        ...(revisions.length > 0 ? [{ key: 'revisions', title: '수정 보고 내역', body: revisionNote }] : []),
+        { key: 'files', title: '이전에 올라온 첨부 파일', body: priorFiles },
+      ]}
+    />
+  )
   const revisionItem: CheckItem[] = revisionNote ? [{ key: 'revision', title: '수정 보고 내용 (이 금액을 기준으로 판단해요)', body: revisionNote }] : []
   const financeItems: CheckItem[] = [
     ...revisionItem,
     { key: 'files', title: '첨부 파일', body: subFileLinks },
-    { key: 'terms', title: '성과 조건 (인플루언서 계약 비용·조건)', body: termsBody },
-    { key: 'profit', title: '공헌이익', body: lines(primary.length ? primary : [missingProfit ?? '']) },
-    { key: 'perf', title: '취합한 성과·비용 자료', body: lines(financePackage(view, { asOf: AS_OF, perf, cash }).lines) },
+    ...(termsBody.props.children.length > 0 ? [{ key: 'terms', title: '계약 방식', body: termsBody }] : []),
+    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} judgment={judgment} stepLabel="재무팀" /> },
   ]
   const contractItems: CheckItem[] = [
     ...revisionItem,
-    { key: 'terms', title: '계약 조건·기한 · 성과 조건', body: termsBody },
+    { key: 'terms', title: '계약 조건 · 기한', body: contractTerms },
     { key: 'files', title: '제출 때 붙은 서류', body: contractSideFiles },
   ]
-  const initialNode =
-    flowState?.current.find((n) => myLanes.includes(n.lane))?.id ?? flowState?.current[0]?.id ?? 'start'
 
   return (
     <>
@@ -278,7 +381,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
               <Card.Description>{flow.description}</Card.Description>
             </Card.Header>
             <Card.Content className="flex flex-col gap-4">
-              <FlowExplorer def={flow} state={flowState} laneLabels={laneLabels} myLanes={myLanes} uid={`case${c.id}`} initial={initialNode} />
+              <FlowExplorer def={flow} state={flowState} laneLabels={laneLabels} myLanes={myLanes} uid={`case${c.id}`} />
             </Card.Content>
           </Card>
         )}
@@ -403,7 +506,25 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
                     return { key: `task${t.id}`, title: '계약 조건·기한 확인 — 항목마다 확인하고 체크하세요', body: <ContractReferPanel caseId={c.id} items={contractItems} files={caseFiles.filter((f) => f.kind === 'contract')} warning={warning} missing={contractMissing} teams={REWORK_TARGETS['confirm-terms']} nextLabel={approverName} /> }
                   }
                   if (String(t.detail.key ?? '') === 'record-reply') {
-                    return { key: `task${t.id}`, title: t.title, body: <RecordReplyPanel caseId={c.id} taskId={t.id} files={caseFiles.filter((f) => f.kind === 'notice')} /> }
+                    return { key: `task${t.id}`, title: t.title, body: <RecordReplyPanel caseId={c.id} taskId={t.id} files={caseFiles.filter((f) => f.kind === 'notice')} info={closingInfo} /> }
+                  }
+                  // 부결 뒤 상대방 통보 단계에도 통보 수령 증빙을 붙일 수 있다 (캠페인: 집행 중단 처리 / 계약: 불연장 통지서 발송)
+                  if (String(t.detail.key ?? '') === 'stop-campaign' || String(t.detail.key ?? '') === 'send-nonrenewal') {
+                    const stop = String(t.detail.key) === 'stop-campaign'
+                    return {
+                      key: `task${t.id}`,
+                      title: t.title,
+                      body: (
+                        <RecordReplyPanel
+                          caseId={c.id}
+                          taskId={t.id}
+                          files={caseFiles.filter((f) => f.kind === 'notice')}
+                          info={closingInfo}
+                          description={stop ? '상대방에 진행하지 않는다고 회신하고, 상대방이 받았다는 회신(통보 수령 증빙)을 붙인 뒤 전속계약 통보 기한도 확인하세요.' : '불연장 통지서를 발송하고, 상대방이 받았다는 회신(통보 수령 증빙)을 붙이세요.'}
+                          doneLabel={stop ? '집행 중단 처리 완료' : '통지서 발송 완료'}
+                        />
+                      ),
+                    }
                   }
                   if (String(t.detail.key ?? '') === 'request-nonrenewal') {
                     return { key: `task${t.id}`, title: t.title, body: <NonrenewalRequestPanel caseId={c.id} approverLabel={approverName} warning={t.detail.warning ? String(t.detail.warning) : null} /> }

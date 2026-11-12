@@ -41,8 +41,8 @@ export function RevisionPanel({
   const valid = Number.isInteger(next) && next > 0 && next !== currentAmount
   const { pct, route } = valid ? revisionRoute(currentAmount, next) : { pct: 0, route: 'direct' as const }
 
-  const submit = () =>
-    start(async () => {
+  // 확인창은 전환(start) 밖에서 기다려야 해요. 전환 안에서 기다리면 확인창을 띄우는 상태 변경이 전환이 끝날 때까지 미뤄져 버튼이 멈춰요.
+  const submit = async () => {
       const ok = await confirm({
         title: '수정 보고하시겠습니까?',
         description: `${amountLabel} ${fmtWon(currentAmount)} → ${fmtWon(next)} (${(pct * 100).toFixed(1)}% ${next > currentAmount ? '증가' : '감소'})`,
@@ -54,6 +54,11 @@ export function RevisionPanel({
         variant: 'warning',
       })
       if (!ok) return
+      send()
+    }
+
+  const send = () =>
+    start(async () => {
       const fd = new FormData()
       fd.set('caseId', String(caseId))
       fd.set('newAmount', amount)

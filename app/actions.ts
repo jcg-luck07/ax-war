@@ -7,7 +7,7 @@ import {
   EngineError, completeTask, decide, getCaseView, provideInfo, resubmitCase, updateFacts, type Outcome,
 } from '@/lib/engine/engine'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
-import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canSubmitCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
+import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
 import { importExpansionPlans } from '@/lib/modules/w02/intake'
 import { contractRefer, financeRefer, requestNonrenewalApproval, requestRework } from '@/lib/modules/w02/handoff'

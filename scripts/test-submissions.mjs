@@ -228,7 +228,7 @@ try {
     assert.equal((await listCaseFiles(sql, r.caseId)).length, 1)
     await removeCaseFile(sql, id, '계약 담당')
     assert.equal((await listCaseFiles(sql, r.caseId)).length, 0)
-    await assert.rejects(() => addCaseFile(sql, { caseId: r.caseId, kind: 'notice', filename: 'n.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' }), /통보·회신 기록 보관 단계가 아니라서/)
+    await assert.rejects(() => addCaseFile(sql, { caseId: r.caseId, kind: 'notice', filename: 'n.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' }), /단계가 아니라서 통보 회신 증빙/)
     const id2 = await addCaseFile(sql, { caseId: r.caseId, kind: 'contract', filename: 'c2.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' })
     await financeRefer(sql, cfg, r.caseId, { linked: false, by: '재무팀' })
     await contractRefer(sql, r.caseId, '계약 담당')

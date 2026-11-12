@@ -34,7 +34,8 @@ export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-
   useEffect(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORE) ?? 'null') as Record<string, number> | null
-      if (saved) setWidths((w) => ({ ...w, ...Object.fromEntries(Object.entries(saved).filter(([k, v]) => columns.some((c) => c.key === k) && Number.isFinite(v) && v >= MIN)) }))
+      // 저장된 폭은 브라우저에서만 읽을 수 있어 화면이 그려진 뒤 반영한다 (효과 본문에서 바로 상태를 바꾸지 않도록 한 박자 늦춘다)
+      if (saved) queueMicrotask(() => setWidths((w) => ({ ...w, ...Object.fromEntries(Object.entries(saved).filter(([k, v]) => columns.some((c) => c.key === k) && Number.isFinite(v) && v >= MIN)) })))
     } catch { /* 저장소를 못 쓰면 무시 */ }
   }, [columns])
 

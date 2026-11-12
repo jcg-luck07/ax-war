@@ -36,7 +36,6 @@ export interface RevisionFile {
   content: Buffer
 }
 
-/* eslint-disable @typescript-eslint/no-explicit-any */
 export async function reportRevision(
   sql: Sql, cfg: EngineConfig,
   input: { caseId: number; newAmount: number; reason: string; files: RevisionFile[]; by: string },

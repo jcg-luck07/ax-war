@@ -133,6 +133,12 @@ try {
     assert.ok(titles.some((s) => s.includes('집행 중단'))); assert.ok(titles.some((s) => s.includes('전속계약은 별개')))
     assert.ok(v.tasks.filter((x) => x.title.includes('집행 중단') || x.title.includes('전속계약은 별개')).every((x) => x.assigneeRole === '계약 담당'), '부결 뒤 절차는 계약 담당이 맡는다')
     assert.equal(v.tasks.find((x) => x.title.includes('집행 중단')).dataOrigin, '가정') // 원본에 없는 절차임을 표시
+    // 집행 중단 처리 단계에서도 상대방 통보 수령 증빙을 붙이고 뺄 수 있다
+    const { addCaseFile, removeCaseFile, listCaseFiles } = await import('@/lib/modules/w02/handoff')
+    const fid = await addCaseFile(sql, { caseId: p.id, kind: 'notice', filename: '수령확인.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' })
+    assert.equal((await listCaseFiles(sql, p.id)).filter((f) => f.kind === 'notice').length, 1)
+    await removeCaseFile(sql, fid, '계약 담당')
+    assert.equal((await listCaseFiles(sql, p.id)).length, 0)
     const r = await E.resubmitCase(sql, cfg, p.id, { by: '마케팅', reason: '배분안 수정 후 재상신' })
     assert.equal(r.statusAfter, 'pending_approval')
   })

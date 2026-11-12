@@ -8,6 +8,8 @@ import { EngineError, completeTask, createTasks, logEvent, provideInfo, updateFa
 export const CONTRACT_KIND = 'contract'
 /** 상대방 통보 회신 증빙 — 계약 담당이 업무 흐름의 마지막 단계(통보·회신 기록 보관)에서 붙인다 */
 export const NOTICE_KIND = 'notice'
+/** 통보 회신 증빙을 붙일 수 있는 단계: 승인(통보·회신 기록 보관) · 캠페인 부결(집행 중단 처리) · 계약 부결(불연장 통지서 발송) */
+export const NOTICE_STEPS = ['record-reply', 'stop-campaign', 'send-nonrenewal']
 export const ALLOWED_EXT = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'hwp', 'hwpx', 'txt', 'md', 'eml', 'msg', 'png', 'jpg', 'jpeg']
 export const MAX_CASE_FILE_BYTES = 8 * 1024 * 1024
 
@@ -45,9 +47,9 @@ export async function addCaseFile(sql: Sql, input: { caseId: number; kind: strin
   if (input.content.length > MAX_CASE_FILE_BYTES) throw new EngineError(`${input.filename}: 파일이 너무 커요 (8MB 까지)`)
   if (input.kind !== CONTRACT_KIND && input.kind !== NOTICE_KIND) throw new EngineError('올릴 수 없는 서류 종류예요')
   // 계약서는 계약 담당의 확인 단계에서만(승인권자에게 넘어간 뒤에는 바꿀 수 없다), 통보 회신 증빙은 통보·회신 기록 보관 단계에서만 올린다
-  const stepKey = input.kind === CONTRACT_KIND ? 'confirm-terms' : 'record-reply'
-  const open = await sql`SELECT 1 FROM tasks WHERE case_id = ${input.caseId} AND status = 'open' AND detail->>'key' = ${stepKey} LIMIT 1`
-  if (open.length === 0) throw new EngineError(input.kind === CONTRACT_KIND ? '계약 담당 확인 단계가 아니라서 계약서를 올릴 수 없어요' : '통보·회신 기록 보관 단계가 아니라서 통보 회신 증빙을 올릴 수 없어요')
+  const stepKeys = input.kind === CONTRACT_KIND ? ['confirm-terms'] : NOTICE_STEPS
+  const open = await sql`SELECT 1 FROM tasks WHERE case_id = ${input.caseId} AND status = 'open' AND detail->>'key' IN ${sql(stepKeys)} LIMIT 1`
+  if (open.length === 0) throw new EngineError(input.kind === CONTRACT_KIND ? '계약 담당 확인 단계가 아니라서 계약서를 올릴 수 없어요' : '통보·회신 기록 보관(승인), 집행 중단 처리·불연장 통지서 발송(부결) 단계가 아니라서 통보 회신 증빙을 올릴 수 없어요')
   const [r] = await sql`
     INSERT INTO case_files (case_id, kind, filename, mime, size, content, uploaded_by)
     VALUES (${input.caseId}, ${input.kind}, ${input.filename}, ${input.mime || 'application/octet-stream'}, ${input.content.length}, ${input.content}, ${input.by}) RETURNING id`
@@ -58,8 +60,8 @@ export async function addCaseFile(sql: Sql, input: { caseId: number; kind: strin
 export async function removeCaseFile(sql: Sql, id: number, by: string): Promise<void> {
   const [f] = await sql`SELECT id, case_id, kind, filename FROM case_files WHERE id = ${id}`
   if (!f) throw new EngineError('없는 파일이에요')
-  const stepKey = f.kind === CONTRACT_KIND ? 'confirm-terms' : 'record-reply'
-  const open = await sql`SELECT 1 FROM tasks WHERE case_id = ${f.case_id} AND status = 'open' AND detail->>'key' = ${stepKey} LIMIT 1`
+  const stepKeys = f.kind === CONTRACT_KIND ? ['confirm-terms'] : NOTICE_STEPS
+  const open = await sql`SELECT 1 FROM tasks WHERE case_id = ${f.case_id} AND status = 'open' AND detail->>'key' IN ${sql(stepKeys)} LIMIT 1`
   if (open.length === 0) throw new EngineError('이미 다음 단계로 넘어가서 첨부를 뺄 수 없어요')
   await sql`DELETE FROM case_files WHERE id = ${id}`
   await logEvent(sql, Number(f.case_id), 'file_removed', '사람', by, { filename: String(f.filename), kind: String(f.kind) })

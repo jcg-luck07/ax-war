@@ -92,7 +92,7 @@ function CheckList({ items, on, setOn }: { items: CheckItem[]; on: Record<string
  * 고른 방향에 맞는 "○○팀으로 회부하기" 버튼 하나로 처리한다.
  */
 function RouteChoice({
-  caseId, fromKey, teams, nextLabel, ready, notReadyHint, onProceed,
+  caseId, fromKey, teams, nextLabel, ready, notReadyHint, onProceed, confirmProceed,
 }: {
   caseId: number
   fromKey: 'collect-performance' | 'confirm-terms'
@@ -102,6 +102,8 @@ function RouteChoice({
   ready: boolean
   notReadyHint: string
   onProceed: () => Promise<{ ok: boolean; message: string }>
+  /** 절차진행 전에 한 번 더 묻고 싶을 때 (연관 안건 경고 등). false 면 멈춘다. 전환 밖에서 기다린다. */
+  confirmProceed?: () => Promise<boolean>
 }) {
   const router = useRouter()
   const [pending, start] = useTransition()
@@ -110,7 +112,12 @@ function RouteChoice({
   const [note, setNote] = useState('')
   const teamLabel = teams.find((t) => t.role === team)?.label ?? ''
   const disabled = pending || mode === '' || (mode === 'proceed' && !ready) || (mode === 'rework' && !team)
-  const go = () =>
+  // 확인창은 전환(start) 밖에서 기다려야 해요. 전환 안에서 기다리면 확인창을 띄우는 상태 변경이 전환이 끝날 때까지 미뤄져 버튼이 멈춰요.
+  const go = async () => {
+    if (mode === 'proceed' && confirmProceed && !(await confirmProceed())) return
+    send()
+  }
+  const send = () =>
     start(async () => {
       const r = mode === 'proceed' ? await onProceed() : await reworkRequestAction({ caseId, fromKey, toRole: team, note })
       if (r.ok) { toast.success(r.message); router.refresh() } else toast.danger(r.message)
@@ -171,12 +178,9 @@ export function FinanceReferItems({
   const [on, setOn] = useState<Record<string, boolean>>({})
   const done = items.filter((i) => on[i.key]).length
   const ready = linked !== '' && done === items.length
-  const proceed = async () => {
-    if (warning && !(await confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' }))) {
-      return { ok: false, message: '회부를 취소했어요.' }
-    }
-    return financeReferAction({ caseId, linked: linked === 'yes' })
-  }
+  const confirmProceed = async () =>
+    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' })
+  const proceed = () => financeReferAction({ caseId, linked: linked === 'yes' })
   return (
     <NumberedList
       start={start}
@@ -223,6 +227,7 @@ export function FinanceReferItems({
               ready={ready}
               notReadyHint={`${linked === '' ? '300억 배분 대상 여부를 고르고, ' : ''}모든 항목을 체크해야 절차진행할 수 있어요.`}
               onProceed={proceed}
+              confirmProceed={confirmProceed}
             />
           ),
         },
@@ -261,12 +266,9 @@ export function ContractReferPanel({
       }
     })
   }
-  const proceed = async () => {
-    if (warning && !(await confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' }))) {
-      return { ok: false, message: '회부를 취소했어요.' }
-    }
-    return contractReferAction({ caseId })
-  }
+  const confirmProceed = async () =>
+    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' })
+  const proceed = () => contractReferAction({ caseId })
 
   return (
     <div className="flex flex-col gap-2">
@@ -296,6 +298,7 @@ export function ContractReferPanel({
         ready={ready}
         notReadyHint={`${files.length === 0 ? '계약서를 첨부하고, ' : ''}모든 항목을 체크해야 절차진행할 수 있어요.`}
         onProceed={proceed}
+        confirmProceed={confirmProceed}
       />
     </div>
   )
@@ -319,8 +322,11 @@ export function NonrenewalRequestPanel({ caseId, approverLabel, warning }: { cas
 }
 
 /** 계약 담당의 마지막 단계(통보·회신 기록 보관): 상대방의 통보 회신 증빙을 붙이고 기록 보관을 끝낸다. */
-export function RecordReplyPanel({ caseId, taskId, files }: { caseId: number; taskId: number; files: { id: number; filename: string; size: number }[] }) {
+export function RecordReplyPanel({
+  caseId, taskId, files, description = '상대방이 통보를 받았다는 회신(통보 수령 증빙)을 붙이고 기록 보관을 끝내세요.', doneLabel = '기록 보관 완료', info,
+}: { caseId: number; taskId: number; files: { id: number; filename: string; size: number }[]; description?: string; doneLabel?: string; info?: ReactNode }) {
   const router = useRouter()
+  const confirm = useConfirm()
   const [pending, start] = useTransition()
   const ref = useRef<HTMLInputElement>(null)
   const upload = (list: File[]) => {
@@ -339,9 +345,19 @@ export function RecordReplyPanel({ caseId, taskId, files }: { caseId: number; ta
       }
     })
   }
+  // 확인창은 전환(start) 밖에서 기다려야 해요. 전환 안에서 기다리면 확인창을 띄우는 상태 변경이 전환이 끝날 때까지 미뤄져 버튼이 멈춰요.
+  // 통보 수령 증빙이 하나도 없으면 한 번 더 묻는다
+  const finish = async () => {
+    if (files.length === 0 && !(await confirm({ title: '통보 수령 증빙이 없어요', description: '첨부된 통보 수령 증빙이 하나도 없습니다.', details: '증빙 없이 이대로 완료하시겠습니까?', confirmLabel: '그래도 완료', cancelLabel: '취소', variant: 'warning' }))) return
+    start(async () => {
+      const r = await completeTaskAction({ taskId })
+      if (r.ok) { toast.success(r.message); router.refresh() } else toast.danger(r.message)
+    })
+  }
   return (
-    <div className="flex flex-col gap-2 border border-default p-2">
-      <p className="t-small">상대방이 통보를 받았다는 회신(통보 수령 증빙)을 붙이고 기록 보관을 끝내세요.</p>
+    <div className="flex flex-col gap-3 border border-default p-2">
+      {info}
+      <p className="t-small">{description}</p>
       <div className="flex flex-wrap items-center gap-2">
         <input ref={ref} type="file" multiple hidden onChange={(e) => { upload(Array.from(e.target.files ?? [])); e.target.value = '' }} />
         <Button size="sm" variant="secondary" isDisabled={pending} onPress={() => ref.current?.click()}>통보 회신 증빙 파일 선택</Button>
@@ -353,8 +369,8 @@ export function RecordReplyPanel({ caseId, taskId, files }: { caseId: number; ta
         </div>
       )}
       <div>
-        <Button isDisabled={pending} onPress={() => start(async () => { const r = await completeTaskAction({ taskId }); if (r.ok) { toast.success(r.message); router.refresh() } else toast.danger(r.message) })}>
-          기록 보관 완료
+        <Button isDisabled={pending} onPress={finish}>
+          {doneLabel}
         </Button>
       </div>
     </div>

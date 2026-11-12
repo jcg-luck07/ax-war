@@ -22,25 +22,23 @@ interface Props {
   counts?: Record<string, number>
   /** 같은 화면에 그림이 여럿일 때 화살표 머리 id 가 겹치지 않게 */
   uid: string
-  /** 노드를 눌렀을 때 (안건 화면) */
-  onSelect?: (nodeId: string) => void
-  selected?: string
   /** 로그인한 사람이 맡은 레인 — 강조해서 보여 준다 */
   myLanes?: string[]
 }
 
 const STATE_CLASS: Record<NodeState, string> = {
   done: 'bg-success-soft',
-  current: 'bg-primary-soft border-2 border-primary',
-  todo: 'bg-content border border-default',
-  blocked: 'bg-warning-soft border border-default',
+  current: 'bg-primary-soft border-2 border-primary font-bold',
+  // 현재 단계 이후(아직 오지 않음·앞 단계 대기)는 색을 넣지 않고 연한 회색으로 — 종결된 안건에서 가지 않은 길과 같은 모양
+  todo: 'bg-muted border border-dashed border-default opacity-50',
+  blocked: 'bg-muted border border-dashed border-default opacity-50',
   skipped: 'bg-muted border border-dashed border-default opacity-50',
 }
 const STATE_TEXT: Record<NodeState, string> = {
   done: '끝남', current: '지금 여기', todo: '대기', blocked: '앞 단계 대기', skipped: '해당 없음',
 }
 
-export function FlowDiagram({ def, state, laneLabels, counts, uid, onSelect, selected, myLanes }: Props) {
+export function FlowDiagram({ def, state, laneLabels, counts, uid, myLanes }: Props) {
   const laneIndex = new Map(def.lanes.map((l, i) => [l.id, i]))
   const maxCol = Math.max(...def.nodes.map((n) => n.col))
   const width = LABEL_W + (maxCol + 1) * COL_W + 16
@@ -120,7 +118,6 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid, onSelect, sel
           const c = center(n), sz = size(n), s = st(n)
           const count = counts?.[n.id]
           const left = c.x - sz.w / 2, top = c.y - sz.h / 2
-          const isSel = selected === n.id
           const isMine = mine.has(n.lane)
           return (
             <div key={n.id}>
@@ -141,22 +138,18 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid, onSelect, sel
               )}
               {(n.kind === 'start' || n.kind === 'end') && (
                 <>
-                  <div className={`absolute rounded-full ${n.kind === 'end' ? 'border-4 border-default' : ''} ${s === 'done' ? 'bg-success-soft' : s === 'skipped' ? 'bg-muted opacity-50' : 'bg-content border border-default'}`} style={{ left, top, width: sz.w, height: sz.h }} title={`${n.label} — ${STATE_TEXT[s]}`} />
+                  <div className={`absolute rounded-full ${n.kind === 'end' ? 'border-4 border-default' : ''} ${s === 'done' ? 'bg-success-soft' : s === 'current' ? 'bg-primary-soft border border-primary' : 'bg-muted opacity-50'}`} style={{ left, top, width: sz.w, height: sz.h }} title={`${n.label} — ${STATE_TEXT[s]}`} />
                   <div className="absolute text-center text-caption-02 leading-tight" style={{ left: c.x - 52, top: top + sz.h + 3, width: 104 }}>{n.label}</div>
                 </>
               )}
-              {onSelect && (
-                <button
-                  type="button"
-                  className={`absolute cursor-pointer ${isSel ? 'outline outline-2 outline-offset-2 outline-primary' : ''}`}
-                  style={{ left: left - 4, top: top - 4, width: sz.w + 8, height: sz.h + 8, borderRadius: 12 }}
-                  aria-label={`${n.label} 자세히 보기`}
-                  aria-pressed={isSel}
-                  onClick={() => onSelect(n.id)}
-                />
-              )}
               {s === 'current' && !counts && (
-                <div className="absolute text-caption-02 font-semibold text-primary" style={{ left: left, top: top - 15, width: Math.max(sz.w, 60) }}>▼ 지금 여기</div>
+                <>
+                  {/* 지금 여기: 노드 둘레에 굵은 고리 + 위에 진한 칩을 달아 한눈에 보이게 한다 */}
+                  <div className="pointer-events-none absolute animate-pulse border-4 border-primary" style={{ left: left - 6, top: top - 6, width: sz.w + 12, height: sz.h + 12, borderRadius: n.kind === 'task' ? 16 : 999 }} aria-hidden="true" />
+                  <div className="absolute flex justify-center" style={{ left: left - 6, top: top - 30, width: sz.w + 12 }}>
+                    <span className="rounded-full bg-primary px-3 py-0.5 text-caption-01 font-semibold text-primary-fg">▼ 지금 여기</span>
+                  </div>
+                </>
               )}
               {counts && count ? (
                 <div className="absolute flex h-6 min-w-6 items-center justify-center rounded-full bg-primary px-1 text-caption-01 font-semibold text-primary-fg" style={{ left: left + sz.w - 12, top: top - 10 }}>
