@@ -46,7 +46,8 @@ export const CATEGORIES: Category[] = [
     id: 'influencer', label: CATEGORY_LABEL.influencer, refLabel: '인플루언서 ID', idRule: 'INF-nnn', idPattern: /^INF-\d{3}$/,
     submitRoles: ['marketing_member', 'marketing_team'], acceptRole: 'marketing_team',
     fields: [
-      ...COMMON_FIELDS('지급 예정일 (고정 피)', '계약 체결 기한 (갱신 통보 기한)', '요청금액 (연 고정 피, 원)'),
+      // 요청금액은 계약 방식에 따라 입력한 고정 피·성과 피 금액의 합으로 정해진다
+      ...COMMON_FIELDS('지급 예정일 (고정 피)', '계약 체결 기한 (갱신 통보 기한)', '').filter((f) => f.name !== 'requested'),
       { name: 'currentExpiry', label: '현 계약 만료일', type: 'date', required: true },
     ],
   },
@@ -59,12 +60,19 @@ export const CATEGORIES: Category[] = [
 
 export const categoryById = (id: string) => CATEGORIES.find((c) => c.id === id)
 
+/** 인플루언서 계약 방식 — 고정 피 / 성과 피 / 혼합 피 */
+export const FEE_TYPES = ['고정 피', '성과 피', '혼합 피'] as const
+export type FeeType = (typeof FEE_TYPES)[number]
+/** 계약 방식에 따라 입력해야 하는 금액 */
+export const feeNeeds = (t: string) => ({ fixed: t === '고정 피' || t === '혼합 피', performance: t === '성과 피' || t === '혼합 피' })
+
 /** 첨부서류 종류. required 는 없으면 제출할 수 없다. requiredFor 는 그 분류에서만 필수다. */
 export const ATTACHMENT_KINDS: { id: string; label: string; required: boolean; requiredFor?: CategoryId[] }[] = [
   { id: 'draft', label: '기안서', required: true },
   { id: 'estimate', label: '비용 및 성과 추계서', required: true },
-  { id: 'contract', label: '계약서', required: false, requiredFor: ['influencer'] },
-  { id: 'notice', label: '통보 수령 증빙', required: false, requiredFor: ['influencer'] },
+  // 아직 계약을 체결한 것이 아니고 본 계약서는 계약 담당이 만들기 때문에, 기존 계약서와 협의서는 없을 수 있다 (선택)
+  { id: 'contract', label: '기존 계약서', required: false },
+  { id: 'consult', label: '협의서 (메일, 공문 등)', required: false },
 ]
 /** 이 분류에서 꼭 첨부해야 하는 종류 */
 export const requiredKinds = (category: string) => ATTACHMENT_KINDS.filter((k) => k.required || k.requiredFor?.includes(category as CategoryId))
@@ -78,8 +86,7 @@ export const MAX_FILES = 12
 
 /** 팀장이 접수하기 전에 하나씩 확인해야 하는 항목. 첨부서류는 파일마다 따로 확인한다(id `file:<파일번호>`). 모두 확인해야 접수할 수 있다 (서버도 다시 확인한다). */
 export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'new' }[] = [
-  { id: 'terms', label: '계약서가 첨부돼 있고, 성과 피 정산 조건과 고정 피 금액이 계약서에 표시돼 있다', only: 'influencer' },
-  { id: 'notice', label: '실제 통보 수령 증빙(통보서·메일 등)이 첨부돼 있다', only: 'influencer' },
+  { id: 'terms', label: '기존 계약서가 첨부된 경우, 성과 피 정산 조건과 고정 피 금액이 표시돼 있다 (첨부가 없으면 없다는 사실을 확인했다)', only: 'influencer' },
   { id: 'ref', label: '분류 ID가 맞고, 안건 내용이 그 대상(인플루언서·캠페인)에 대한 것이다' },
   { id: 'newref', label: '신규 ID: 전사 ID 규칙에 맞고, 이름(·소속 인플루언서)이 맞으며, 기존 ID와 겹치지 않는다', only: 'new' },
   { id: 'deadline', label: '계약 체결 기한을 확인했고, 남은 기간 안에 승인까지 끝낼 수 있다' },
@@ -167,9 +174,38 @@ export interface UploadedFile {
 }
 
 /** 제출 내용을 검사하고 접수 대기(보고)로 올린다. 필수 칸·첨부·공헌이익 칸이 모두 채워져야 한다. */
+/** 아직 비어 있는 필수 항목 (제출·접수 때 같은 기준으로 쓴다). 파일은 종류만 본다. */
+export function missingRequired(category: string, v: Record<string, string>, fileKinds: string[]): string[] {
+  const cat = categoryById(category)
+  if (!cat) return []
+  const isNew = v.isNewRef === '1'
+  const out: string[] = []
+  if (isNew) {
+    if (!(v.refName ?? '').trim()) out.push(`신규 ${cat.refLabel.replace(' ID', '')} 이름`)
+    if (cat.id === 'campaign' && !(v.parentInfluencerId ?? '').trim()) out.push('소속 인플루언서')
+  }
+  for (const f of cat.fields) {
+    if (f.name === 'currentExpiry' && isNew) continue
+    if (f.required && !(v[f.name] ?? '').trim()) out.push(f.label)
+  }
+  if (cat.id === 'influencer') {
+    if (!FEE_TYPES.includes(v.feeType as FeeType)) out.push('계약 방식')
+    else {
+      const need = feeNeeds(v.feeType)
+      if (need.fixed && !(Number(v.fixedFee) > 0)) out.push('고정 피 금액')
+      if (need.performance && !(Number(v.performanceFee) > 0)) out.push('성과 피 금액')
+    }
+  }
+  if (CONTRIB_KEYS.some((k) => !(v[k] ?? '').trim())) out.push('공헌이익 계산 칸')
+  for (const k of requiredKinds(cat.id)) if (!fileKinds.includes(k.id)) out.push(`첨부: ${k.label}`)
+  return out
+}
+
+/** allowIncomplete: 필수 항목이 비어 있어도 제출한다 (제출자가 확인한 경우). 접수 때 팀장이 보완·반려를 판단한다. */
 export async function submitIntake(
-  sql: Sql, input: { category: string; refId: string; values: Record<string, string>; files: UploadedFile[]; by: string },
+  sql: Sql, input: { category: string; refId: string; values: Record<string, string>; files: UploadedFile[]; by: string; allowIncomplete?: boolean },
 ): Promise<SubmissionRow> {
+  const inc = Boolean(input.allowIncomplete)
   const cat = categoryById(input.category)
   if (!cat) throw new EngineError('안건 종류를 골라 주세요')
   const refId = input.refId.trim().toUpperCase()
@@ -181,25 +217,46 @@ export async function submitIntake(
     // 신규 인플루언서는 아직 계약이 없어 현 계약 만료일이 없다
     if (f.name === 'currentExpiry' && isNew) { v.currentExpiry = ''; continue }
     const val = (input.values[f.name] ?? '').trim().replace(f.type === 'number' ? /,/g : /^$/, '')
-    if (f.required && !val) throw new EngineError(`${f.label} 을(를) 입력해 주세요`)
+    if (f.required && !val && !inc) throw new EngineError(`${f.label} 을(를) 입력해 주세요`)
     if (val && f.type === 'date' && !isDate(val)) throw new EngineError(`${f.label} 은(는) YYYY-MM-DD 형식으로 입력해 주세요`)
     if (val && f.type === 'number' && !(Number.isInteger(Number(val)) && Number(val) > 0)) throw new EngineError(`${f.label} 은(는) 0보다 큰 정수(원)여야 해요`)
     v[f.name] = val
   }
   v.memo = (input.values.memo ?? '').trim()
+  // 인플루언서 계약: 계약 방식(고정 피/성과 피/혼합 피)과 방식에 맞는 금액. 요청금액 = 고정 피 + 성과 피
+  if (cat.id === 'influencer') {
+    let feeType = (input.values.feeType ?? '').trim()
+    let fixed = (input.values.fixedFee ?? '').replace(/,/g, '').trim()
+    const perf = (input.values.performanceFee ?? '').replace(/,/g, '').trim()
+    if (!feeType && !fixed && !perf && (input.values.requested ?? '').trim()) { feeType = '고정 피'; fixed = input.values.requested.replace(/,/g, '').trim() } // 예전 입력 방식(요청금액 = 고정 피)
+    if (!feeType && !inc) throw new EngineError('계약 방식(고정 피·성과 피·혼합 피)을 골라 주세요')
+    if (feeType && !FEE_TYPES.includes(feeType as FeeType)) throw new EngineError('알 수 없는 계약 방식이에요')
+    const need = feeNeeds(feeType)
+    for (const [label, raw, needed] of [['고정 피 금액', fixed, need.fixed], ['성과 피 금액', perf, need.performance]] as const) {
+      if (raw && !(Number.isInteger(Number(raw)) && Number(raw) > 0)) throw new EngineError(`${label} 은(는) 0보다 큰 정수(원)여야 해요`)
+      if (needed && !raw && !inc) throw new EngineError(`${label} 을(를) 입력해 주세요`)
+    }
+    v.feeType = feeType
+    v.fixedFee = need.fixed ? fixed : ''
+    v.performanceFee = need.performance ? perf : ''
+    const total = (need.fixed ? Number(fixed || 0) : 0) + (need.performance ? Number(perf || 0) : 0)
+    v.requested = total > 0 ? String(total) : ''
+  }
   // 공헌이익 칸 (원, 1원 단위) — 요청금액은 마케팅 지출로 자동 들어간다
   const rawContrib: Record<string, string> = {}
   for (const k of CONTRIB_KEYS) {
     v[k] = (input.values[k] ?? '').replace(/,/g, '').trim()
     rawContrib[k] = v[k]
   }
-  const bad = validateContribution(rawContrib, CONTRIB_KEYS)
+  // 일부만 채운 경우에도 값의 형식은 검사한다 (불완전 제출이면 빈 칸은 허용)
+  const filled = Object.fromEntries(Object.entries(rawContrib).filter(([, x]) => x !== ''))
+  const bad = inc ? validateContribution(filled, Object.keys(filled) as never) : validateContribution(rawContrib, CONTRIB_KEYS)
   if (bad) throw new EngineError(bad)
 
   // 첨부
   if (input.files.length > MAX_FILES) throw new EngineError(`첨부파일은 ${MAX_FILES}개까지 올릴 수 있어요`)
   for (const k of requiredKinds(cat.id)) {
-    if (!input.files.some((f) => f.kind === k.id)) throw new EngineError(`${k.label} 을(를) 첨부해 주세요`)
+    if (!input.files.some((f) => f.kind === k.id) && !inc) throw new EngineError(`${k.label} 을(를) 첨부해 주세요`)
   }
   for (const f of input.files) {
     if (f.kind === CUSTOM_KIND) {
@@ -219,19 +276,19 @@ export async function submitIntake(
   let name = refId
   if (isNew) {
     const refName = (input.values.refName ?? '').trim()
-    if (!refName) throw new EngineError(`신규 ${cat.refLabel} 의 이름을 입력해 주세요`)
+    if (!refName && !inc) throw new EngineError(`신규 ${cat.refLabel} 의 이름을 입력해 주세요`)
     if (refName.length > 40) throw new EngineError('이름은 40자 이내로 입력해 주세요')
     const exists = cat.id === 'influencer' ? influencers.some((i) => i.influencer_id === refId) : campaigns.some((c) => c.campaign_id === refId)
-    if (exists) throw new EngineError(`${refId} 는 이미 있는 ID예요. 목록에서 골라 주세요`)
+    if (exists) throw new EngineError(`이미 있는 분류ID입니다! (${refId}) 목록에서 골라 주세요`)
     const clash = await sql`SELECT 1 FROM submissions WHERE category = ${cat.id} AND ref_id = ${refId} AND input->>'isNewRef' = '1' AND status <> 'returned' LIMIT 1`
-    if (clash.length > 0) throw new EngineError(`${refId} 는 이미 다른 신규 제출에서 쓰고 있어요`)
+    if (clash.length > 0) throw new EngineError(`이미 있는 분류ID입니다! (${refId}) 다른 신규 제출에서 쓰고 있어요`)
     v.isNewRef = '1'; v.refName = refName
     if (cat.id === 'campaign') {
       const parent = (input.values.parentInfluencerId ?? '').trim().toUpperCase()
-      if (parent !== 'NONE' && !influencers.some((i) => i.influencer_id === parent)) throw new EngineError('소속 인플루언서 ID 를 목록에서 고르거나 해당 없음(NONE)을 골라 주세요')
+      if (!(inc && parent === '') && parent !== 'NONE' && !influencers.some((i) => i.influencer_id === parent)) throw new EngineError('소속 인플루언서 ID 를 목록에서 고르거나 해당 없음(NONE)을 골라 주세요')
       v.parentInfluencerId = parent
     }
-    name = `${refName}(${refId})`
+    name = refName ? `${refName}(${refId})` : refId
   } else if (cat.id === 'influencer') {
     const infl = influencers.find((i) => i.influencer_id === refId)
     if (!infl) throw new EngineError(`인플루언서 ${refId} 를 찾을 수 없어요 (새로 등록하려면 "신규 ID 입력"을 고르세요)`)
@@ -241,7 +298,12 @@ export async function submitIntake(
     if (!c) throw new EngineError(`캠페인 ${refId} 를 찾을 수 없어요 (새로 등록하려면 "신규 ID 입력"을 고르세요)`)
     name = `${c.campaign_name}(${refId})`
   }
-  const title = cat.id === 'influencer' ? `${name} ${isNew ? '신규 전속계약 체결' : '전속계약 갱신'} — 연 ${Number(v.requested).toLocaleString('ko-KR')}원${isNew ? ' [신규 ID]' : ''}` : `${name} 집행 — ${Number(v.requested).toLocaleString('ko-KR')}원${isNew ? ' [신규 ID]' : ''}`
+  const amountText = v.requested ? `${Number(v.requested).toLocaleString('ko-KR')}원` : '금액 미입력'
+  if (inc) {
+    const miss = missingRequired(cat.id, v, input.files.map((f) => f.kind))
+    if (miss.length > 0) v.incomplete = '1'
+  }
+  const title = cat.id === 'influencer' ? `${name} ${isNew ? '신규 전속계약 체결' : '전속계약 갱신'} — ${v.feeType || '고정 피'} 연 ${amountText}${isNew ? ' [신규 ID]' : ''}` : `${name} 집행 — ${amountText}${isNew ? ' [신규 ID]' : ''}`
 
   return (await sql.begin(async (tx) => {
     const t = tx as unknown as Sql
@@ -279,10 +341,10 @@ export async function acceptSubmission(
     ...files.filter((f) => !checked.includes(fileCheckId(f.id))).map((f) => `첨부 ${f.filename}`),
   ]
   if (missing.length > 0) throw new EngineError(`확인하지 않은 항목이 있어요: ${missing.join(' / ')}`)
-  // 전속계약은 계약서와 실제 통보 수령 증빙이 첨부돼 있어야 재무팀에 회부할 수 있다 (없으면 반려해 팀원이 다시 올린다)
-  if (s.category === 'influencer') {
-    if (!files.some((f) => f.kind === 'contract')) throw new EngineError('계약서가 첨부되지 않았어요. 반려해서 팀원이 다시 올리게 해 주세요')
-    if (!files.some((f) => f.kind === 'notice')) throw new EngineError('실제 통보 수령 증빙이 첨부되지 않았어요. 반려해서 팀원이 다시 올리게 해 주세요')
+  // 필수 항목을 채우지 않고 제출된 건은 비어 있는 항목이 남아 있으면 접수할 수 없다 (반려해서 보완하게 한다)
+  if (s.input.incomplete === '1') {
+    const miss = missingRequired(s.category, s.input, files.map((f) => f.kind))
+    if (miss.length > 0) throw new EngineError(`필수 항목이 비어 있어 접수할 수 없어요: ${miss.join(', ')}. 반려해서 팀원이 다시 올리게 해 주세요`)
   }
   if (draftId !== null && (await sql`SELECT 1 FROM drafts WHERE id = ${draftId}`).length === 0) throw new EngineError('고른 기안을 찾을 수 없어요')
 
@@ -300,6 +362,7 @@ export async function acceptSubmission(
   if (s.category === 'influencer') {
     res = await receiveContractNotice(sql, cfg, {
       influencerId: s.refId, annualFixedFeeKrw: Math.round(Number(v.requested)), notifyDeadline: v.contractDeadline,
+      feeType: v.feeType || undefined, fixedFeeKrw: v.fixedFee ? Number(v.fixedFee) : undefined, performanceFeeKrw: v.performanceFee ? Number(v.performanceFee) : undefined,
       currentExpiry: v.currentExpiry || null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
       newInfluencerName: v.isNewRef === '1' ? v.refName : undefined,
     }, by)

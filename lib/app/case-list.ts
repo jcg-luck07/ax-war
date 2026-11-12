@@ -6,6 +6,7 @@ import { deriveFlowState, type FlowView } from '@/lib/process/state'
 import { stateText } from '@/lib/process/status'
 import { CASE_TYPE_CATEGORY, caseTypeLabel, type CategoryId } from './labels'
 import { roleLabel } from './engine'
+import { authorityText } from './approver'
 
 export interface CaseRow {
   id: number
@@ -29,13 +30,34 @@ export interface CaseRow {
   dataOrigin: string
   /** 같은 인플루언서의 안건을 찾는 데 쓴다 (캠페인 집행은 소속 인플루언서) */
   influencerId: string
+  /** 엔진의 안건 상태 (open · pending_approval · approved · rejected · on_hold · closed …) */
+  status: string
+  /** 승인권자의 가장 최근 결정 결과 — 후속 작업이 끝나 닫힌 안건도 승인인지 부결인지 알 수 있다. 아직 결정 전이면 null */
+  outcome: 'approved' | 'rejected' | 'on_hold' | null
+  /** 결정 상태 이름: 승인 / 부결 / 재검토 / 결재 전 */
+  decisionLabel: string
+  /** 전속계약의 계약 방식과 금액 (예: 혼합 피 — 고정 피 연 28억 + 성과 피 3%). 전속계약이 아니면 null */
+  feeText: string | null
   /** 이 안건이 들어 있는 기안 번호 */
   draftId: number | null
   /** 승인권자 이름 — 아직 확정되지 않았으면 null */
   approverLabel: string | null
+  /** 승인권자 구분 (예: 마케팅팀 전결 / Masil 대표 승인 + 그룹 보고 / CEO/이사회) — 확정 전이면 null */
+  authorityText: string | null
 }
 
 type Facts = Record<string, unknown>
+
+/** 전속계약의 계약 방식 (안건 제출 때 입력) */
+export interface FeeInfo { feeType?: string; fixedFeeKrw?: number; performanceFeeKrw?: number }
+const won = (n: number) => `${Math.round(n).toLocaleString('ko-KR')}원`
+export function feeText(info: FeeInfo | undefined, amount: number, revised = false): string {
+  if (revised && info?.feeType) return `${info.feeType} 연 ${won(amount)} (수정 보고 반영)`
+  if (!info?.feeType) return amount > 0 ? `고정 피 연 ${won(amount)}` : '계약 방식 미입력'
+  if (info.feeType === '고정 피') return `고정 피 연 ${won(info.fixedFeeKrw ?? amount)}`
+  if (info.feeType === '성과 피') return `성과 피 연 ${won(info.performanceFeeKrw ?? amount)}`
+  return `혼합 피 — 고정 피 연 ${won(info.fixedFeeKrw ?? 0)} + 성과 피 연 ${won(info.performanceFeeKrw ?? 0)}`
+}
 
 /** 제목에서 분류코드·요청액·내부 번호(SYN-/PLAN-/SUB-)를 덜어 낸다. 예: "혜인(INF-001) 연간 전속계약 갱신 — 고정 피 연 28억 원" → "혜인 연간 전속계약 갱신" */
 export function plainTitle(title: string): string {
@@ -50,7 +72,7 @@ export function plainTitle(title: string): string {
 export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
   const [cases, approvals, tasks, events, draftRows] = await Promise.all([
     listCases(sql),
-    sql`SELECT case_id, status, required_role FROM approvals ORDER BY id`,
+    sql`SELECT case_id, status, required_role, kind FROM approvals ORDER BY id`,
     sql`SELECT case_id, task_type, status, title, assignee_role, detail FROM tasks ORDER BY id`,
     sql`SELECT case_id, event_type FROM case_events`,
     sql`SELECT id, draft_id FROM decision_cases`,
@@ -64,7 +86,7 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
     }
     return m
   }
-  const ap = by(approvals as unknown as { case_id: number }[]) as Map<number, { case_id: number; status: string; required_role: string }[]>
+  const ap = by(approvals as unknown as { case_id: number }[]) as Map<number, { case_id: number; status: string; required_role: string; kind?: string }[]>
   const tk = by(tasks as unknown as { case_id: number }[]) as Map<number, { case_id: number; task_type: string; status: string; title: string; assignee_role: string | null; detail: Record<string, unknown> }[]>
   const ev = by(events as unknown as { case_id: number }[]) as Map<number, { case_id: number; event_type: string }[]>
 
@@ -78,13 +100,18 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
     const def = flowForCaseType(c.caseType)
     const view: FlowView = {
       case: { status: c.status, authority: c.authority },
-      approvals: (ap.get(c.id) ?? []).map((a) => ({ status: a.status, requiredRole: a.required_role })),
+      approvals: (ap.get(c.id) ?? []).map((a) => ({ status: a.status, requiredRole: a.required_role, kind: a.kind ?? 'main' })),
       tasks: (tk.get(c.id) ?? []).map((t) => ({ taskType: t.task_type, status: t.status, title: t.title, assigneeRole: t.assignee_role, detail: t.detail ?? {} })),
       events: (ev.get(c.id) ?? []).map((e) => ({ eventType: e.event_type })),
     }
     const pending = view.approvals.find((a) => a.status === 'pending')
-    const approverLabel = pending ? roleLabel(pending.requiredRole) : c.authority ? roleLabel(c.authority) : '승인권자'
+    // 규칙 평가가 "확정"일 때만 승인권자로 본다 (모르는 사실이 있으면 authority 에 잠정값이 남아 있어도 미확정)
+    const evalDecision = (c.payload as { evaluation?: { decision?: { status?: string; also?: string[] } } }).evaluation?.decision
+    const decidedAuth = evalDecision?.status === 'decided' ? c.authority : null
+    const approverLabel = pending ? roleLabel(pending.requiredRole) : decidedAuth ? roleLabel(decidedAuth) : '승인권자 미확정'
     const st = def ? deriveFlowState(def, view) : null
+    const decidedMain = [...view.approvals].reverse().find((a) => (a.kind ?? 'main') === 'main' && ['approved', 'rejected', 'on_hold'].includes(a.status))
+    const outcome = (decidedMain?.status ?? null) as 'approved' | 'rejected' | 'on_hold' | null
     const s = stateText(def, st, c.status, approverLabel)
     return {
       id: c.id,
@@ -100,8 +127,13 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
       deadline: c.deadline,
       dataOrigin: c.dataOrigin,
       influencerId: c.subjectRefs.influencer ?? '',
+      status: c.status,
+      outcome,
+      decisionLabel: outcome === 'approved' ? '승인' : outcome === 'rejected' ? '부결' : outcome === 'on_hold' ? '재검토' : '결재 전',
+      feeText: cat === 'influencer' ? feeText((c.payload as { contract?: FeeInfo }).contract, Number.isFinite(amount) ? amount : 0, ((c.payload as { revisions?: unknown[] }).revisions?.length ?? 0) > 0) : null,
       draftId: draftOf.get(c.id) ?? null,
-      approverLabel: c.authority ? roleLabel(c.authority) : null,
+      approverLabel: decidedAuth ? roleLabel(decidedAuth) : null,
+      authorityText: decidedAuth ? authorityText(decidedAuth, evalDecision?.also ?? []) : null,
     }
   })
 }

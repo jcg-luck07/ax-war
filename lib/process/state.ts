@@ -4,7 +4,7 @@ import type { EdgeState, FlowDef, FlowNode, NodeState, Outcome } from './types'
 /** 엔진의 CaseView 중 이 계산에 필요한 부분만 (엔진을 import 하지 않기 위한 최소 모양) */
 export interface FlowView {
   case: { status: string; authority: string | null }
-  approvals: { status: string; requiredRole: string }[]
+  approvals: { status: string; requiredRole: string; kind?: string }[]
   tasks: { taskType: string; status: string; title: string; assigneeRole: string | null; detail: Record<string, unknown> }[]
   events: { eventType: string }[]
 }
@@ -23,8 +23,10 @@ export interface FlowState {
 const key = (t: { detail: Record<string, unknown> }) => String(t.detail.key ?? '')
 
 export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
-  const pending = v.approvals.find((a) => a.status === 'pending')
-  const decided = [...v.approvals].reverse().find((a) => a.status === 'approved' || a.status === 'rejected' || a.status === 'on_hold')
+  // 부결 뒤 계약 불연장 통보 같은 두 번째 승인은 업무 흐름의 결정(마름모)으로 세지 않는다
+  const mainApprovals = v.approvals.filter((a) => (a.kind ?? 'main') === 'main')
+  const pending = mainApprovals.find((a) => a.status === 'pending')
+  const decided = [...mainApprovals].reverse().find((a) => a.status === 'approved' || a.status === 'rejected' || a.status === 'on_hold')
   const outcome = pending ? null : ((decided?.status as Outcome | undefined) ?? null)
   const hasEval = v.events.some((e) => e.eventType === 'evaluated')
   const status = v.case.status
@@ -52,16 +54,30 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
         if (pending) return gateOpen ? 'blocked' : 'current'
         if (outcome) return 'done'
         return 'blocked'
+      case 'approval2': {
+        const second = v.approvals.filter((a) => (a.kind ?? 'main') !== 'main')
+        if (second.some((a) => a.status === 'pending')) return 'current'
+        if (second.some((a) => a.status === 'approved' || a.status === 'on_hold')) return 'done'
+        if (outcome && outcome !== b.branch) return 'skipped'
+        return 'todo'
+      }
       case 'task': {
-        const t = v.tasks.find((x) => key(x) === b.key)
-        if (t) return t.status === 'open' ? 'current' : t.status === 'done' ? 'done' : 'skipped'
+        const t = [...v.tasks].reverse().find((x) => key(x) === b.key) // 다시 열린 작업이 있으면 가장 최근 것
+        if (t) {
+          if (t.status !== 'open') return t.status === 'done' ? 'done' : 'skipped'
+          const after = t.detail.after ? String(t.detail.after) : ''
+          return after && v.tasks.some((x) => key(x) === after && x.status === 'open') ? 'blocked' : 'current' // 앞 작업이 끝나야 열린다
+        }
         if (outcome && outcome !== b.branch) return 'skipped'
         return 'todo'
       }
       case 'end': {
         if (outcome && outcome !== b.branch) return 'skipped'
         if (b.branch === 'approved') return status === 'closed' ? 'done' : 'todo'
-        if (outcome === b.branch) return v.tasks.some((t) => t.status === 'open' && t.taskType !== 'info_request') ? 'todo' : 'done'
+        if (outcome === b.branch) {
+          const secondPending = v.approvals.some((a) => (a.kind ?? 'main') !== 'main' && a.status === 'pending') // 불연장 통지서 승인을 기다리는 중
+          return secondPending || v.tasks.some((t) => t.status === 'open' && t.taskType !== 'info_request') ? 'todo' : 'done'
+        }
         return 'todo'
       }
     }

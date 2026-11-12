@@ -118,7 +118,8 @@ try {
     let s = await flowOf(contractId)
     assert.equal(s.outcome, 'approved'); assert.equal(s.nodes.decide, 'done'); assert.equal(s.edges['decide->doc'], 'taken'); assert.equal(s.edges['decide->rethink'], 'dim')
     assert.equal(s.nodes.rethink, 'skipped'); assert.equal(s.nodes.holdReason, 'skipped')
-    assert.deepEqual(s.current.map((x) => x.id).sort(), ['doc', 'notify', 'record'])
+    assert.deepEqual(s.current.map((x) => x.id), ['doc'], '승인 뒤에는 한 방향으로만: 승인조건 문서화가 먼저이고 통보·기록 보관은 앞 작업이 끝나야 열린다')
+    assert.equal(s.nodes.notify, 'blocked'); assert.equal(s.nodes.record, 'blocked')
     for (const task of (await view(contractId)).tasks.filter((x) => x.status === 'open')) await E.completeTask(sql, task.id, '담당')
     s = await flowOf(contractId)
     assert.equal(s.current.length, 0); assert.equal(s.nodes.endOk, 'done'); assert.equal(s.nodes.endNo, 'skipped')
@@ -129,12 +130,14 @@ try {
     await prep(ap.caseId)
     await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
     const s = await flowOf(plan.id)
-    assert.equal(s.outcome, 'rejected'); assert.equal(s.nodes.prepare, 'skipped'); assert.equal(s.edges['decide->rethinkAlloc'], 'taken')
-    assert.ok(s.current.some((x) => x.id === 'rethinkAlloc') && s.current.some((x) => x.id === 'checkContract'))
+    assert.equal(s.outcome, 'rejected'); assert.equal(s.nodes.doc, 'skipped'); assert.equal(s.edges['decide->rethinkAlloc'], 'taken')
+    assert.deepEqual(s.current.map((x) => x.id), ['rethinkAlloc'], '부결도 한 갈래: 집행 중단 처리 단계에서 전속계약 별개 결정 확인까지 함께 처리한다')
+    assert.ok(!s.nodes.checkContract, '전속계약 별개 결정 확인은 별도 노드가 아니다')
   })
 
-  await t('흐름 선언의 무결성: 화살표 끝점이 모두 있고, 레인·칸이 겹치지 않는다', () => {
-    for (const def of FLOWS) {
+  await t('흐름 선언의 무결성: 화살표 끝점이 모두 있고, 레인·칸이 겹치지 않는다 (그룹 보고를 뺀 흐름 포함)', async () => {
+    const { flowWithoutGroupReport } = await import('@/lib/process/definitions')
+    for (const def of [...FLOWS, ...FLOWS.map(flowWithoutGroupReport)]) {
       const ids = new Set(def.nodes.map((x) => x.id))
       for (const e of def.edges) assert.ok(ids.has(e.from) && ids.has(e.to), `${def.id}: ${e.from}->${e.to}`)
       const lanes = new Set(def.lanes.map((l) => l.id))
@@ -146,14 +149,22 @@ try {
       }
     }
   })
+  await t('그룹 보고 단계는 1억 초과 안건에만 있다: 뺀 흐름은 기록 보관 바로 다음이 계약 체결이다', async () => {
+    const { flowWithoutGroupReport, EXPANSION_FLOW } = await import('@/lib/process/definitions')
+    const f = flowWithoutGroupReport(EXPANSION_FLOW)
+    assert.ok(EXPANSION_FLOW.nodes.some((x) => x.id === 'report')); assert.ok(!f.nodes.some((x) => x.id === 'report'))
+    assert.ok(f.edges.some((e) => e.from === 'record' && e.to === 'endOk')); assert.ok(!f.edges.some((e) => e.from === 'report' || e.to === 'report'))
+    assert.equal(f.nodes.find((x) => x.id === 'endOk').label, '계약 체결')
+  })
   await t('흐름 선언 ↔ 업무 모듈 일치: 결정 뒤 생기는 모든 작업이 그림에 노드로 있고, 그림의 작업 노드는 실제로 생긴다', () => {
     const handlers = { ...makeW02Handlers({ decide: decideAuthority, roleLabel: (x) => x }) }
     for (const def of FLOWS) {
       const produced = new Set()
       for (const ct of def.caseTypes) {
         for (const outcome of ['approved', 'rejected', 'on_hold']) {
-          const c = { caseType: ct, deadline: '2026-07-17', status: 'x', payload: { evaluation: { decision: { also: ['그룹 보고'] } }, facts: {}, plan: { settlement_date: '2026-07-20' } } }
+          const c = { caseType: ct, deadline: '2026-07-17', status: 'x', payload: { evaluation: { decision: { authority: 'masil_ceo', also: ['그룹 보고'] } }, facts: {}, plan: { settlement_date: '2026-07-20' } } }
           for (const spec of handlers[ct].onDecision(c, outcome, { asOf: '2026-07-01' })) produced.add(`${outcome}:${spec.key}`)
+          if (outcome === 'approved' && handlers[ct].onFollowupDecision) for (const spec of handlers[ct].onFollowupDecision(c, 'nonrenewal', 'approved', { asOf: '2026-07-01' })) produced.add(`rejected:${spec.key}`) // 부결 뒤 불연장 통보 승인으로 생기는 작업
         }
       }
       const drawn = new Set(def.nodes.filter((x) => x.bind.t === 'task').map((x) => `${x.bind.branch}:${x.bind.key}`))
@@ -162,7 +173,7 @@ try {
     }
   })
 
-  await t('목록 상태: 재무팀 검토 필요 → 계약 담당 확인 필요 → 승인 필요 → 후속 작업 → 완료, 부결이면 재검토, 모두 7가지 안에서만 나온다', async () => {
+  await t('목록 상태: 재무팀 검토 필요 → 계약 담당 확인 필요 → 승인 필요 → 후속 작업 → 완료, 부결이면 부결, 재검토면 재검토, 모두 7가지 안에서만 나온다', async () => {
     const { stateText, STATES } = await import('@/lib/process/status')
     const mkCase = (extra) => receiveContractNotice(sql, cfg, { annualFixedFeeKrw: 2_800_000_000, currentExpiry: '2026-09-30', note: '', linkedToGroup300: false, fixedFeePaymentDate: '2026-09-15', ...extra }, '시험')
     const bases = new Set()
@@ -183,7 +194,12 @@ try {
     for (const task of (await view(b.caseId)).tasks.filter((x) => x.detail.gate === 'pre-approval')) await E.completeTask(sql, task.id, '시험')
     const ap2 = (await view(b.caseId)).approvals.find((x) => x.status === 'pending')
     await E.decide(sql, cfg, ap2.id, { outcome: 'rejected', byRole: 'ceo_board', byName: '강세연' })
-    assert.equal((await stateOf(b.caseId)).base, '재검토')
+    assert.equal((await stateOf(b.caseId)).base, '부결') // 부결 = 진행하지 않음, 후속 절차(불연장 통보)가 남아 있는 동안
+    const c2 = await mkCase({ influencerId: 'INF-009', notifyDeadline: '2026-07-29' })
+    for (const task of (await view(c2.caseId)).tasks.filter((x) => x.detail.gate === 'pre-approval')) await E.completeTask(sql, task.id, '시험')
+    const ap3 = (await view(c2.caseId)).approvals.find((x) => x.status === 'pending')
+    await E.decide(sql, cfg, ap3.id, { outcome: 'on_hold', byRole: 'ceo_board', byName: '강세연' })
+    assert.equal((await stateOf(c2.caseId)).base, '재검토') // 재검토 = 처음 올린 부서로 돌아가 보완 중
     for (const x of bases) assert.ok(STATES.some((y) => y.base === x), `7가지 밖의 상태: ${x}`)
   })
 

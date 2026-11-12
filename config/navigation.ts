@@ -18,7 +18,7 @@ export type NavItem = {
   href: string;
   icon: Icon;
   adminOnly?: boolean;
-  /** 현금 재전망을 볼 수 있는 사람(승인 권한자)에게만 보여요 */
+  /** 현금흐름을 볼 수 있는 사람(승인 권한자·재무팀)에게만 보여요 */
   authorityOnly?: boolean;
 };
 
@@ -26,6 +26,6 @@ export const NAVIGATION: NavItem[] = [
   { label: "할 일", href: "/inbox", icon: Tray },
   { label: "기안 목록", href: "/cases", icon: ListChecks },
   { label: "기안 접수", href: "/intake", icon: FilePlus },
-  { label: "현금 재전망", href: "/cash", icon: Wallet, authorityOnly: true },
+  { label: "현금흐름", href: "/cash", icon: Wallet, authorityOnly: true },
   { label: "용어 사전", href: "/model", icon: Database },
 ];

@@ -13,7 +13,7 @@ import { calcContribution } from '@/lib/metrics/contribution-calc'
 import { dateInBreachWindow } from '@/lib/modules/cash/simulate'
 import { pendingExpansionPlans } from '@/lib/modules/w02/intake'
 import {
-  ATTACHMENT_KINDS, CATEGORIES, CUSTOM_KIND, fileCheckId, checksFor, contributionFromInput, findOpenCasesFor, listFiles, listSubmissions, categoryById,
+  ATTACHMENT_KINDS, CATEGORIES, CUSTOM_KIND, fileCheckId, checksFor, contributionFromInput, missingRequired, findOpenCasesFor, listFiles, listSubmissions, categoryById,
 } from '@/lib/modules/intake/submissions'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
@@ -53,6 +53,10 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
     allowed: canSubmitCategory(user, c.submitRoles, c.acceptRole), acceptLabel: roleLabel(c.acceptRole),
     fields: c.fields, options: options[c.id] ?? [],
     nextId: c.id === 'influencer' ? nextOf('INF-', 3, infl.map((i) => String(i.influencer_id))) : nextOf('CMP-', 4, camp.map((x) => String(x.campaign_id))),
+    takenIds: [
+      ...(c.id === 'influencer' ? infl.map((i) => String(i.influencer_id)) : camp.map((x) => String(x.campaign_id))),
+      ...subs.filter((x) => x.category === c.id && x.input.isNewRef === '1' && x.status !== 'returned').map((x) => x.refId),
+    ],
     parents: options.influencer ?? [],
     idPrefix: c.id === 'influencer' ? 'INF-' : 'CMP-',
     idDigits: c.id === 'influencer' ? 3 : 4,
@@ -179,6 +183,7 @@ async function AcceptTab({
           ...(isNewRef ? [{ id: 'newref', label: '신규 ID 확인', value: `${sel.refId} · 이름 ${v.refName}${v.parentInfluencerId ? ` · 소속 ${v.parentInfluencerId} ${nameOf.get(v.parentInfluencerId) ?? ''}` : ''} (규칙 ${cat.idRule})`, hint: chk.newref }] : []),
           { id: 'deadline', label: '계약 체결 기한', value: `${v.contractDeadline} (${ddayText(dl)})`, hint: chk.deadline },
           { id: 'settle', label: '지급 예정일', value: <>{v.settlementDate}{inWin === null ? '' : inWin ? <span className="text-danger"> · 현금 하회 예상 구간 안 (승인권자가 올라가요)</span> : ' · 하회 구간 밖'}</>, hint: chk.settle },
+          ...(sel.category === 'influencer' ? [{ label: '계약 방식', value: `${v.feeType || '고정 피'}${v.fixedFee ? ` · 고정 피 ${fmtWon(Number(v.fixedFee))}` : ''}${v.performanceFee ? ` · 성과 피 ${fmtWon(Number(v.performanceFee))}` : ''}` }] : []),
           { id: 'amount', label: '요청금액', value: fmtWon(contrib.marketingSpend), hint: chk.amount },
           ...(v.currentExpiry ? [{ label: '현 계약 만료일', value: v.currentExpiry }] : []),
           { id: 'memo', label: '메모', value: v.memo || '(메모 없음)', hint: chk.memo },
@@ -190,8 +195,7 @@ async function AcceptTab({
           ...files.map((f) => ({ id: fileCheckId(f.id), label: fileLabel(f), value: link(f), hint: '이 파일을 열어 내용을 확인했다' })),
           ...(sel.category === 'influencer'
             ? [
-                { id: 'terms', label: '계약서 내용', value: files.some((f) => f.kind === 'contract') ? '성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인' : <span className="text-danger">계약서 첨부 없음</span>, hint: chk.terms },
-                { id: 'notice', label: '통보 수령 증빙', value: files.some((f) => f.kind === 'notice') ? '실제로 통보를 받았다는 증빙인지 확인' : <span className="text-danger">통보 수령 증빙 첨부 없음</span>, hint: chk.notice },
+                { id: 'terms', label: '기존 계약서', value: files.some((f) => f.kind === 'contract') ? '성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인' : <span className="t-caption">첨부 없음 (선택 항목 — 본 계약서는 계약 담당이 만들어요)</span>, hint: chk.terms },
               ]
             : []),
         ],
@@ -215,6 +219,7 @@ async function AcceptTab({
         rows: [{ id: 'dup', label: '같은 대상 진행 안건', value: dups.length ? `${dups.length}건: ${dups.map((x) => `#${x.id}`).join(', ')}` : '없음', hint: chk.dup }],
       },
     ]
+    const missingNow = v.incomplete === '1' ? missingRequired(sel.category, v, files.map((f) => f.kind)) : []
     detail = (
       <Card>
         <Card.Header>
@@ -222,6 +227,11 @@ async function AcceptTab({
           <Card.Description>{cat.label} · 보고자 {sel.submittedBy} · {fmtDateTime(sel.createdAt)}</Card.Description>
         </Card.Header>
         <Card.Content>
+          {missingNow.length > 0 && (
+            <p className="mb-3 border border-danger p-2 t-small" style={{ borderRadius: 2 }}>
+              <strong className="text-danger">필수 항목을 채우지 않고 제출된 건이에요.</strong> 비어 있는 항목: {missingNow.join(', ')}. 이 상태로는 접수할 수 없으니 반려해서 팀원이 보완해 다시 올리게 해 주세요.
+            </p>
+          )}
           <AcceptReview
             key={sel.id}
             id={sel.id}
@@ -230,8 +240,7 @@ async function AcceptTab({
             mustCheck={[
               ...(sel.category === 'influencer'
                 ? [
-                    { id: 'terms', text: '계약서 첨부 확인 — 성과 피 정산 조건과 고정 피 금액이 표시돼 있는지' },
-                    { id: 'notice', text: '실제 통보 수령 증빙 첨부 확인' },
+                    { id: 'terms', text: '기존 계약서가 있으면 성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인 (없을 수 있어요)' },
                   ]
                 : []),
               { id: 'calc', text: '공헌이익 산출 여부 확인' },

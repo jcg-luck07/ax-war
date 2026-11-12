@@ -101,9 +101,9 @@ export const canWork = (user: AppUser) => user.authenticated && user.roles.lengt
 
 export const roleLabels = (ids: string[]) => ids.map((id) => roleById(id)?.label ?? id)
 
-/** 이 사람이 현금 재전망(covenant 하회 구간)을 볼 수 있는가 — 승인 권한이 있는 역할(팀장 이상) */
+/** 이 사람이 현금흐름(covenant 하회 구간 재전망)을 볼 수 있는가 — 승인 권한이 있는 역할(팀장 이상)과 재무팀 */
 export const canSeeCash = (user: AppUser) =>
-  user.authenticated && user.roles.some((id) => (roleById(id)?.rank ?? 0) > 0)
+  user.authenticated && user.roles.some((id) => id === 'finance' || (roleById(id)?.rank ?? 0) > 0)
 
 /** 이 분류의 안건을 접수(받아서 안건으로 만들기)할 수 있는가 — 접수 최소 역할 이상 */
 export const canAcceptCategory = (user: AppUser, acceptRole: string) => user.authenticated && decidingRole(user, acceptRole) !== null

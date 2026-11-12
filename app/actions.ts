@@ -10,7 +10,7 @@ import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canSubmitCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
 import { importExpansionPlans } from '@/lib/modules/w02/intake'
-import { contractRefer, financeRefer } from '@/lib/modules/w02/handoff'
+import { contractRefer, financeRefer, requestNonrenewalApproval, requestRework } from '@/lib/modules/w02/handoff'
 import { beyondGroupFundPeriod } from '@/lib/modules/w02/group-fund'
 import { outflowDate } from '@/lib/modules/w02/handlers'
 import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
@@ -57,7 +57,7 @@ export async function decideAction(input: { approvalId: number; outcome: Outcome
       )
     }
     const r = await decide(sql, cfg, input.approvalId, { outcome: input.outcome, byRole: role, byName: user.name, comment: input.comment || undefined })
-    const label = input.outcome === 'approved' ? '승인' : input.outcome === 'rejected' ? '부결' : '보류'
+    const label = input.outcome === 'approved' ? '승인' : input.outcome === 'rejected' ? '부결' : '재검토'
     return `${label}했어요. 후속 작업 ${r.taskIds.length}개가 생겼어요.`
   })
 }
@@ -120,11 +120,30 @@ export async function contractReferAction(input: { caseId: number }) {
   })
 }
 
+/** 보완 요청: 이전에 거쳐 온 팀에게 되돌린다 (재무팀은 성과·비용표 취합 단계에서, 계약 담당은 계약 확인 단계에서) */
+export async function reworkRequestAction(input: { caseId: number; fromKey: 'collect-performance' | 'confirm-terms'; toRole: string; note: string }) {
+  return guarded(async (user, sql) => {
+    if (!canHandle(user, input.fromKey === 'collect-performance' ? '재무' : '계약 담당')) throw new EngineError('이 단계를 맡은 부서만 보완을 요청할 수 있어요.')
+    await requestRework(sql, input.caseId, { ...input, by: user.name })
+    return '보완을 요청했어요. 그 팀이 끝내면 다시 이 단계로 돌아와요.'
+  })
+}
+
+/** 부결된 계약 안건: 계약 담당이 후속조치로 계약 미갱신 통지서 결재를 보고 (승인권자의 재승인 필요) */
+export async function nonrenewalRequestAction(input: { caseId: number }) {
+  return guarded(async (user, sql) => {
+    if (!canHandle(user, '계약 담당')) throw new EngineError('계약 담당만 보고할 수 있어요.')
+    const { cfg } = await getEngine()
+    const r = await requestNonrenewalApproval(sql, cfg, input.caseId, user.name)
+    return `계약 미갱신 통지서를 ${r.requiredLabel}에게 결재 보고했어요.`
+  })
+}
+
 export async function resubmitAction(input: { caseId: number; reason: string }) {
   return guarded(async (user, sql) => {
     needRole(user)
     const { cfg } = await getEngine()
-    await resubmitCase(sql, cfg, input.caseId, { by: user.name, reason: input.reason || '재상신' })
+    await resubmitCase(sql, cfg, input.caseId, { by: user.name, reason: input.reason || '재보고' })
     return '다시 올렸어요. 새 승인 요청이 만들어졌어요.'
   })
 }

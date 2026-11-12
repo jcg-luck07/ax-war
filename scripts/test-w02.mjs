@@ -130,10 +130,136 @@ try {
     assert.equal(d.statusAfter, 'rejected')
     const v = await view(p.id)
     const titles = v.tasks.map((x) => x.title)
-    assert.ok(titles.some((s) => s.includes('[제안]'))); assert.ok(titles.some((s) => s.includes('전속계약은 별개')))
-    assert.equal(v.tasks.find((x) => x.title.includes('[제안]')).dataOrigin, '가정') // 원본에 없는 제안임을 표시
+    assert.ok(titles.some((s) => s.includes('집행 중단'))); assert.ok(titles.some((s) => s.includes('전속계약은 별개')))
+    assert.ok(v.tasks.filter((x) => x.title.includes('집행 중단') || x.title.includes('전속계약은 별개')).every((x) => x.assigneeRole === '계약 담당'), '부결 뒤 절차는 계약 담당이 맡는다')
+    assert.equal(v.tasks.find((x) => x.title.includes('집행 중단')).dataOrigin, '가정') // 원본에 없는 절차임을 표시
     const r = await E.resubmitCase(sql, cfg, p.id, { by: '마케팅', reason: '배분안 수정 후 재상신' })
     assert.equal(r.statusAfter, 'pending_approval')
+  })
+
+  await t('[승인 전 보완요청] 이전 팀으로 되돌리면 내 단계가 멈추고, 그 팀이 끝내야 다시 열린다. 이전에 거쳐 온 팀만 고를 수 있다', async () => {
+    const { requestRework } = await import('@/lib/modules/w02/handoff')
+    const r = await receiveContractNotice(sql, cfg, { influencerId: 'INF-008', annualFixedFeeKrw: 2_800_000_000, notifyDeadline: '2026-07-30', currentExpiry: '2026-09-30', fixedFeePaymentDate: '2026-09-15', note: '', linkedToGroup300: false }, '시험')
+    const id = r.caseId
+    await assert.rejects(() => requestRework(sql, id, { fromKey: 'collect-performance', toRole: '계약 담당', note: '', by: '재무' }), /보완을 요청할 수 있는 팀이 아니에요/)
+    await requestRework(sql, id, { fromKey: 'collect-performance', toRole: '마케팅', note: '추계서 보완', by: '재무' })
+    await assert.rejects(() => requestRework(sql, id, { fromKey: 'collect-performance', toRole: '마케팅', note: '', by: '재무' }), /이미 보완을 요청/)
+    let v = await view(id)
+    const collect = v.tasks.find((x) => x.detail.key === 'collect-performance')
+    const rework = v.tasks.find((x) => x.detail.key === 'rework:collect-performance')
+    assert.equal(rework.assigneeRole, '마케팅'); assert.match(rework.title, /추계서 보완/)
+    await assert.rejects(() => E.completeTask(sql, collect.id, '재무'), /앞 단계가 먼저/)
+    await E.completeTask(sql, rework.id, '마케팅')
+    await E.completeTask(sql, collect.id, '재무') // 보완이 끝나 다시 열린다
+    // 계약 담당은 재무팀·마케팅팀 중에서 고를 수 있다
+    await requestRework(sql, id, { fromKey: 'confirm-terms', toRole: '재무', note: '', by: '계약 담당' })
+  })
+
+  await t('[부결] 계약 안건: 계약 담당이 불연장 통보를 상신하면 같은 승인권자에게 새 승인이 가고, 승인해야 통보할 수 있다. 부결은 재상신하지 않는다', async () => {
+    const { requestNonrenewalApproval } = await import('@/lib/modules/w02/handoff')
+    const r = await receiveContractNotice(sql, cfg, { influencerId: 'INF-009', annualFixedFeeKrw: 2_800_000_000, notifyDeadline: '2026-08-03', currentExpiry: '2026-09-30', fixedFeePaymentDate: '2026-09-15', note: '', linkedToGroup300: false }, '시험')
+    const id = r.caseId
+    await prep(id)
+    const ap = (await view(id)).approvals.find((a) => a.status === 'pending')
+    await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'ceo_board', byName: '강세연' })
+    let v = await view(id)
+    assert.equal(v.case.status, 'rejected'); assert.ok(v.tasks.some((x) => x.detail.key === 'request-nonrenewal' && x.assigneeRole === '계약 담당'))
+    const res = await requestNonrenewalApproval(sql, cfg, id, '계약 담당')
+    assert.equal(res.requiredLabel, 'CEO/이사회')
+    v = await view(id)
+    const second = v.approvals.find((a) => a.status === 'pending')
+    assert.equal(second.kind, 'nonrenewal'); assert.equal(second.requiredRole, 'ceo_board'); assert.equal(v.case.status, 'rejected', '안건은 여전히 부결 상태')
+    await assert.rejects(() => E.decide(sql, cfg, second.id, { outcome: 'rejected', byRole: 'ceo_board', byName: '강세연' }), /승인 또는 재검토만/)
+    await E.decide(sql, cfg, second.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
+    v = await view(id)
+    const send = v.tasks.find((x) => x.detail.key === 'send-nonrenewal'); assert.ok(send); assert.equal(send.assigneeRole, '계약 담당')
+    assert.equal(v.case.status, 'rejected', '통보를 보내기 전에는 닫히지 않는다')
+    await E.completeTask(sql, send.id, '계약 담당')
+    assert.equal((await view(id)).case.status, 'closed', '후속 작업이 모두 끝나면 부결 안건도 닫힌다')
+  })
+
+  await t('[재검토] 승인권자가 재검토하면 처음 올린 마케팅으로 돌아가 보완하고, 재상신하면 새 승인 요청이 만들어진다', async () => {
+    const r = await receiveContractNotice(sql, cfg, { influencerId: 'INF-010', annualFixedFeeKrw: 2_800_000_000, notifyDeadline: '2026-08-05', currentExpiry: '2026-09-30', fixedFeePaymentDate: '2026-09-15', note: '', linkedToGroup300: false }, '시험')
+    const id = r.caseId
+    await prep(id)
+    const ap = (await view(id)).approvals.find((a) => a.status === 'pending')
+    await E.decide(sql, cfg, ap.id, { outcome: 'on_hold', byRole: 'ceo_board', byName: '강세연', comment: '조건 보완 필요' })
+    const v = await view(id)
+    assert.equal(v.case.status, 'on_hold'); assert.ok(v.tasks.some((x) => x.detail.key === 'hold-reason' && x.assigneeRole === '마케팅' && /재검토/.test(x.title)))
+    const re = await E.resubmitCase(sql, cfg, id, { by: '마케팅', reason: '보완 후 다시 보고' })
+    assert.equal(re.statusAfter, 'pending_approval')
+    // 재검토 뒤에는 재무팀부터 처음부터 다시 거친다: 승인 앞 단계가 새로 열리고, 그 전에는 승인권자가 결정할 수 없다
+    const v2 = await view(id)
+    const open = v2.tasks.filter((x) => x.status === 'open' && x.detail.gate === 'pre-approval').map((x) => x.detail.key).sort()
+    assert.deepEqual(open, ['collect-performance', 'confirm-terms'])
+    assert.ok(!v2.tasks.some((x) => x.status === 'open' && x.detail.key === 'hold-reason'), '보완 요청 일은 다시 보고하면서 끝난다')
+    const ap2 = v2.approvals.find((a) => a.status === 'pending')
+    await assert.rejects(() => E.decide(sql, cfg, ap2.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' }), /앞 단계가 끝나야/)
+    await assert.rejects(() => E.completeTask(sql, v2.tasks.find((x) => x.status === 'open' && x.detail.key === 'confirm-terms').id, '계약 담당'), /앞 단계가 먼저/) // 재무팀 다음에 계약 담당
+    await prep(id)
+    await E.decide(sql, cfg, ap2.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
+    // 승인 뒤: 승인조건 문서화 → 상대방에 계약 통보(마케팅) → 통보·회신 기록 보관 순서로만 열린다
+    const v3 = await view(id)
+    const byKey = (k) => v3.tasks.find((x) => x.detail.key === k)
+    assert.equal(byKey('notify-counterparty').assigneeRole, '마케팅')
+    await assert.rejects(() => E.completeTask(sql, byKey('notify-counterparty').id, '마케팅'), /앞 단계가 먼저/)
+    await E.completeTask(sql, byKey('doc-conditions').id, '계약 담당')
+    await E.completeTask(sql, byKey('notify-counterparty').id, '마케팅')
+    await E.completeTask(sql, byKey('record-reply').id, '계약 담당')
+    assert.equal((await view(id)).case.status, 'closed')
+  })
+
+  await t('[수정 보고] 변동 5% 이내는 최초 승인권자에게 바로, 5% 초과는 재무팀 절차부터 다시. 승인권한 기준을 넘나들어도 승인권자는 바뀌지 않고, 원 금액·원 첨부는 그대로 쌓인다', async () => {
+    const { reportRevision } = await import('@/lib/modules/w02/revision')
+    const { financeRefer, listCaseFiles } = await import('@/lib/modules/w02/handoff')
+    const mk = (infl, fee, dl) => receiveContractNotice(sql, cfg, { influencerId: infl, annualFixedFeeKrw: fee, notifyDeadline: dl, currentExpiry: '2026-09-30', fixedFeePaymentDate: '2026-09-15', note: '', linkedToGroup300: false }, '시험')
+    const file = { filename: '수정계약서.txt', mime: 'text/plain', content: Buffer.from('수정') }
+
+    // ① 5% 이내 → 최초 승인권자(CEO/이사회)에게 바로
+    const a = (await mk('INF-005', 2_800_000_000, '2026-08-07')).caseId
+    await prep(a)
+    const ap1 = (await view(a)).approvals.find((x) => x.status === 'pending')
+    await E.decide(sql, cfg, ap1.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
+    await assert.rejects(() => reportRevision(sql, cfg, { caseId: a, newAmount: 2_800_000_000, reason: '', files: [], by: '마케팅' }), /원래 금액과 같아요/)
+    const r1 = await reportRevision(sql, cfg, { caseId: a, newAmount: 2_940_000_000, reason: '고정 피 5% 인상', files: [file], by: '마케팅' }) // 정확히 +5%
+    assert.equal(r1.route, 'direct')
+    let v = await view(a)
+    assert.equal(v.case.status, 'pending_approval'); assert.equal(v.case.payload.facts.annual_contract_value_krw, 2_940_000_000)
+    assert.equal(v.case.payload.originalAmount, 2_800_000_000, '원 금액은 그대로 남는다')
+    const pend = v.approvals.find((x) => x.status === 'pending')
+    assert.equal(pend.requiredRole, 'ceo_board')
+    assert.equal(v.tasks.filter((x) => x.status === 'open' && x.detail.gate === 'pre-approval').length, 0, '바로 보고: 재무팀 절차를 다시 거치지 않는다')
+    assert.equal(v.tasks.filter((x) => x.status === 'open' && x.detail.key === 'doc-conditions').length, 0, '이전 결정의 열린 후속 작업은 닫힌다')
+    const files = await listCaseFiles(sql, a)
+    assert.deepEqual(files.filter((f) => f.kind === 'revision').map((f) => `${f.revision}:${f.filename}`), ['1:수정계약서.txt'])
+    await E.decide(sql, cfg, pend.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
+    assert.ok((await view(a)).tasks.some((x) => x.status === 'open' && x.detail.key === 'doc-conditions'), '새 승인 뒤 후속 작업이 다시 열린다')
+
+    // ② 5% 초과 + 기준(연 10억)을 넘나듦 → 재무팀부터 다시, 승인권자는 최초(Masil 대표) 그대로
+    const b = (await mk('INF-006', 800_000_000, '2026-08-11')).caseId
+    await prep(b)
+    const ap2 = (await view(b)).approvals.find((x) => x.status === 'pending')
+    assert.equal(ap2.requiredRole, 'masil_ceo')
+    await E.decide(sql, cfg, ap2.id, { outcome: 'approved', byRole: 'masil_ceo', byName: '한지우' })
+    const r2 = await reportRevision(sql, cfg, { caseId: b, newAmount: 1_200_000_000, reason: '', files: [], by: '마케팅' })
+    assert.equal(r2.route, 'restart')
+    v = await view(b)
+    assert.deepEqual(v.tasks.filter((x) => x.status === 'open' && x.detail.gate === 'pre-approval').map((x) => x.detail.key).sort(), ['collect-performance', 'confirm-terms'])
+    await financeRefer(sql, cfg, b, { linked: false, by: '재무팀' }) // 재평가가 일어나도
+    v = await view(b)
+    const pend2 = v.approvals.filter((x) => x.status === 'pending')
+    assert.equal(pend2.length, 1); assert.equal(pend2[0].requiredRole, 'masil_ceo', '12억은 원래 CEO/이사회 기준이지만 최초 승인권자(Masil 대표)가 그대로 맡는다')
+    // 두 번째 수정 보고는 직전 금액 대비로 계산되고 내역이 쌓인다
+    await prep(b)
+    await E.decide(sql, cfg, pend2[0].id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
+    const r3 = await reportRevision(sql, cfg, { caseId: b, newAmount: 1_230_000_000, reason: '', files: [], by: '마케팅' })
+    assert.equal(r3.route, 'direct'); assert.equal(r3.no, 2)
+    v = await view(b)
+    assert.deepEqual(v.case.payload.revisions.map((x) => [x.fromAmount, x.toAmount]), [[800_000_000, 1_200_000_000], [1_200_000_000, 1_230_000_000]])
+    assert.equal(v.case.payload.originalAmount, 800_000_000)
+    // 결정이 나지 않은 안건은 수정 보고할 수 없다
+    const d = (await mk('INF-007', 700_000_000, '2026-08-13')).caseId
+    await assert.rejects(() => reportRevision(sql, cfg, { caseId: d, newAmount: 710_000_000, reason: '', files: [], by: '마케팅' }), /승인 또는 부결이 난 안건만/)
   })
 
   await t('모든 상태 변화가 이력에 남는다 (이력만 보고 경위를 재구성할 수 있다)', async () => {

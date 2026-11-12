@@ -46,6 +46,10 @@ export interface CaseHandler {
   onEvaluated?(c: DecisionCase, d: AuthorityDecision, ctx: HandlerCtx): Promise<TaskSpec[]> | TaskSpec[]
   /** 사람이 결정한 직후 생겨야 하는 후속 작업 */
   onDecision?(c: DecisionCase, outcome: Outcome, ctx: HandlerCtx): Promise<TaskSpec[]> | TaskSpec[]
+  /** 재검토 뒤 다시 올릴 때 새로 열어야 하는 승인 앞 단계 작업 (처음부터 다시 거친다) */
+  onResubmit?(c: DecisionCase, ctx: HandlerCtx): Promise<TaskSpec[]> | TaskSpec[]
+  /** 안건 승인과 별개로 올린 두 번째 승인(예: 부결 뒤 계약 불연장 통보)의 결정 직후 생겨야 하는 작업 */
+  onFollowupDecision?(c: DecisionCase, kind: string, outcome: Outcome, ctx: HandlerCtx): Promise<TaskSpec[]> | TaskSpec[]
   /** 모르는 사실(fact)을 누구에게 어떻게 물을지 */
   describeFact?(fact: string):
     | { title: string; assigneeRole: string; question: string; answerFields?: AnswerField[] }
@@ -72,6 +76,8 @@ export class EngineError extends Error {
 export interface ApprovalRow {
   id: number
   caseId: number
+  /** main: 안건 승인 / nonrenewal: 계약 불연장 통보 승인 */
+  kind: string
   requiredRole: string
   status: string
   decidedBy: string | null
@@ -127,7 +133,7 @@ const toCase = (r: any): DecisionCase => ({
 })
 const d10 = (v: any) => (v ? (v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10)) : null)
 const toApproval = (r: any): ApprovalRow => ({
-  id: Number(r.id), caseId: Number(r.case_id), requiredRole: r.required_role, status: r.status,
+  id: Number(r.id), caseId: Number(r.case_id), kind: r.kind ?? 'main', requiredRole: r.required_role, status: r.status,
   decidedBy: r.decided_by, decidedAt: r.decided_at ? new Date(r.decided_at).toISOString() : null,
   comment: r.comment, createdAt: new Date(r.created_at).toISOString(),
 })
@@ -143,7 +149,7 @@ const toEvent = (r: any): EventRow => ({
 })
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-async function logEvent(
+export async function logEvent(
   sql: Sql, caseId: number, eventType: string, actorKind: ActorKind, actorName: string | null, detail: Record<string, unknown>,
 ) {
   await sql`
@@ -238,7 +244,7 @@ export interface EvalResult {
 
 const FINAL: CaseStatus[] = ['approved', 'rejected', 'closed']
 
-async function createTasks(sql: Sql, caseId: number, specs: TaskSpec[], actor: { kind: ActorKind; name: string | null }) {
+export async function createTasks(sql: Sql, caseId: number, specs: TaskSpec[], actor: { kind: ActorKind; name: string | null }) {
   const ids: number[] = []
   for (const s of specs) {
     // 같은 열쇠의 열린 작업이 있으면 만들지 않는다. detail.once 인 작업은 끝난 뒤에도(재평가해도) 다시 만들지 않는다.
@@ -272,7 +278,12 @@ async function evaluateInTx(sql: Sql, cfg: EngineConfig, caseId: number, reason:
   const stored = (c.payload.facts ?? {}) as Facts
   const derived = handler?.deriveFacts ? await handler.deriveFacts(c, cfg.ctx) : {}
   const facts: Facts = { ...stored, ...derived }
-  const decision = cfg.decide(c.caseType, facts)
+  let decision = cfg.decide(c.caseType, facts)
+  // 수정 보고한 안건은 금액이 승인권한 기준을 넘나들어도 최초로 결정한 승인권자가 그대로 맡는다
+  const lock = (c.payload as { authorityLock?: string }).authorityLock
+  if (lock && decision.status === 'decided' && decision.authority !== lock) {
+    decision = { ...decision, authority: lock, authorityLabel: cfg.roleLabel(lock), trace: [...decision.trace, `수정 보고 안건: 최초 승인권자(${cfg.roleLabel(lock)})를 유지`] }
+  }
 
   const statusBefore = c.status
   const authorityBefore = c.authority
@@ -285,7 +296,7 @@ async function evaluateInTx(sql: Sql, cfg: EngineConfig, caseId: number, reason:
   if (!finalized) {
     if (decision.status === 'decided' && decision.authority) {
       statusAfter = 'pending_approval'
-      const pend = await sql`SELECT id, required_role FROM approvals WHERE case_id = ${caseId} AND status = 'pending'`
+      const pend = await sql`SELECT id, required_role FROM approvals WHERE case_id = ${caseId} AND status = 'pending' AND kind = 'main'`
       const same = pend.find((p) => p.required_role === decision.authority)
       for (const p of pend) {
         if (p.required_role !== decision.authority) {
@@ -304,7 +315,7 @@ async function evaluateInTx(sql: Sql, cfg: EngineConfig, caseId: number, reason:
       // 확인 요청이 더 필요 없어졌다면(답이 와서 확정) 열린 확인 요청은 정리하지 않는다 — 회신으로 이미 done
     } else if (decision.status === 'need_info') {
       statusAfter = 'need_info'
-      const pend = await sql`SELECT id, required_role FROM approvals WHERE case_id = ${caseId} AND status = 'pending'`
+      const pend = await sql`SELECT id, required_role FROM approvals WHERE case_id = ${caseId} AND status = 'pending' AND kind = 'main'`
       for (const p of pend) {
         await sql`UPDATE approvals SET status = 'superseded', comment = '확인 필요 상태로 전환되어 보류됨' WHERE id = ${p.id}`
         await logEvent(sql, caseId, 'approval_superseded', '시스템', null, {
@@ -441,6 +452,23 @@ export async function decide(
         `권한이 부족해요: 이 건은 ${cfg.roleLabel(ap.requiredRole)} 승인이 필요한데 ${cfg.roleLabel(input.byRole)} 입니다`,
       )
     }
+    // 부결 뒤 계약 불연장 통보처럼 안건 승인과 별개로 올린 두 번째 승인: 안건 상태는 그대로 두고 후속 작업만 만든다 (부결은 할 수 없고 승인 또는 재검토)
+    if (ap.kind !== 'main') {
+      if (input.outcome === 'rejected') throw new EngineError('이 승인은 승인 또는 재검토만 할 수 있어요')
+      const c2 = await loadCase(t, ap.caseId, true)
+      await t`
+        UPDATE approvals SET status = ${input.outcome},
+          decided_by = ${input.byName && input.byName !== cfg.roleLabel(input.byRole) ? `${input.byName} (${cfg.roleLabel(input.byRole)})` : cfg.roleLabel(input.byRole)},
+          decided_at = now(), comment = ${input.comment ?? null} WHERE id = ${approvalId}
+      `
+      await logEvent(t, ap.caseId, 'decided', '사람', input.byName, {
+        approvalId, outcome: input.outcome, byRole: input.byRole, byRoleLabel: cfg.roleLabel(input.byRole), requiredRole: ap.requiredRole, kind: ap.kind, comment: input.comment ?? null,
+      })
+      const h2 = cfg.handlers[c2.caseType]
+      const specs2 = h2?.onFollowupDecision ? await h2.onFollowupDecision(c2, ap.kind, input.outcome, cfg.ctx) : []
+      const ids2 = await createTasks(t, ap.caseId, specs2, { kind: '시스템', name: null })
+      return { caseId: ap.caseId, outcome: input.outcome, statusAfter: c2.status as CaseStatus, taskIds: ids2 }
+    }
     // 승인 전에 끝나야 하는 앞 단계(detail.gate = 'pre-approval')가 열려 있으면 결정할 수 없다
     const gate = await t`SELECT title FROM tasks WHERE case_id = ${ap.caseId} AND status = 'open' AND detail->>'gate' = 'pre-approval' ORDER BY id`
     if (gate.length > 0) throw new EngineError(`앞 단계가 끝나야 결정할 수 있어요: ${gate.map((g) => g.title).join(', ')}`)
@@ -464,7 +492,7 @@ export async function decide(
   })) as DecideResult
 }
 
-/** 부결·보류된 안건을 다시 올린다(재상신). 새 승인 요청이 만들어진다. */
+/** 재검토(또는 부결)된 안건을 다시 보고한다. 승인 앞 단계를 처음부터 다시 거치고, 새 승인 요청이 만들어진다. */
 export async function resubmitCase(
   sql: Sql, cfg: EngineConfig, caseId: number, input: { by: string; reason: string },
 ): Promise<EvalResult> {
@@ -472,11 +500,16 @@ export async function resubmitCase(
     const t = tx as unknown as Sql
     const c = await loadCase(t, caseId, true)
     if (c.status !== 'rejected' && c.status !== 'on_hold') {
-      throw new EngineError(`부결·보류 상태에서만 재상신할 수 있어요 (현재 ${c.status})`)
+      throw new EngineError(`재검토·부결 상태에서만 다시 보고할 수 있어요 (현재 ${c.status})`)
     }
     await t`UPDATE decision_cases SET status = 'open', updated_at = now() WHERE id = ${caseId}`
     await logEvent(t, caseId, 'resubmitted', '사람', input.by, { reason: input.reason, from: c.status })
-    return evaluateInTx(t, cfg, caseId, `재상신: ${input.reason}`)
+    // 보완 요청에 따른 일은 다시 올리는 것으로 끝나고, 승인 앞 단계(재무팀 → 계약 담당)를 처음부터 다시 거친다
+    const holds = await t`UPDATE tasks SET status = 'done', completed_at = now() WHERE case_id = ${caseId} AND status = 'open' AND detail->>'key' = 'hold-reason' RETURNING id, title`
+    for (const h of holds) await logEvent(t, caseId, 'task_done', '사람', input.by, { taskId: Number(h.id), title: h.title })
+    const redo = cfg.handlers[c.caseType]?.onResubmit ? await cfg.handlers[c.caseType].onResubmit!(c, cfg.ctx) : []
+    await createTasks(t, caseId, redo, { kind: '시스템', name: null })
+    return evaluateInTx(t, cfg, caseId, `다시 보고: ${input.reason}`)
   })) as EvalResult
 }
 
@@ -500,10 +533,12 @@ export async function completeTask(sql: Sql, taskId: number, by: string): Promis
     await logEvent(t, task.caseId, 'task_done', '사람', by, { taskId, title: task.title })
     const c = await loadCase(t, task.caseId, true)
     const open = await t`SELECT 1 FROM tasks WHERE case_id = ${task.caseId} AND status = 'open' LIMIT 1`
+    const pendingAp = await t`SELECT 1 FROM approvals WHERE case_id = ${task.caseId} AND status = 'pending' LIMIT 1`
     let caseClosed = false
-    if (c.status === 'approved' && open.length === 0) {
+    // 승인된 안건뿐 아니라 부결된 안건도 후속 작업(불연장 통보 등)이 모두 끝나면 닫는다. 새 승인 요청이 기다리는 중이면 닫지 않는다.
+    if ((c.status === 'approved' || c.status === 'rejected') && open.length === 0 && pendingAp.length === 0) {
       await t`UPDATE decision_cases SET status = 'closed', updated_at = now() WHERE id = ${task.caseId}`
-      await logEvent(t, task.caseId, 'status_changed', '시스템', null, { from: 'approved', to: 'closed', reason: '후속 작업 모두 완료' })
+      await logEvent(t, task.caseId, 'status_changed', '시스템', null, { from: c.status, to: 'closed', reason: '후속 작업 모두 완료' })
       caseClosed = true
     }
     return { caseId: task.caseId, caseClosed }

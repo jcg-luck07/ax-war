@@ -53,7 +53,12 @@ export async function importExpansionPlans(sql: Sql, cfg: EngineConfig, actorNam
 
 export interface ContractNoticeInput {
   influencerId: string
+  /** 연 계약 금액 — 고정 피 방식이면 고정 피, 혼합 피면 고정 피 + 성과 피. 승인권한 판정의 기준 금액이다 */
   annualFixedFeeKrw: number
+  /** 계약 방식 (고정 피 / 성과 피 / 혼합 피)과 방식별 금액 — 제출 때 입력 */
+  feeType?: string
+  fixedFeeKrw?: number
+  performanceFeeKrw?: number
   notifyDeadline: string
   /** 신규 인플루언서(첫 계약)는 현 계약이 없어 null */
   currentExpiry: string | null
@@ -80,7 +85,7 @@ export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: 
   if (existing) throw new EngineError(`같은 인플루언서·통보 기한의 안건이 이미 있어요 (#${existing.id})`)
   return openCase(sql, cfg, {
     caseType: CONTRACT_CASE_TYPE,
-    title: `${infl.influencer_name}(${input.influencerId}) 연간 전속계약 갱신 — 고정 피 연 ${fmtWon(input.annualFixedFeeKrw)}`,
+    title: `${infl.influencer_name}(${input.influencerId}) 연간 전속계약 갱신 — ${input.feeType ?? '고정 피'} 연 ${fmtWon(input.annualFixedFeeKrw)}`,
     deadline: input.notifyDeadline,
     subjectRefs: { influencer: input.influencerId },
     payload: {
@@ -90,7 +95,10 @@ export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: 
         fixed_fee_payment_date: input.fixedFeePaymentDate, // 모르면 null → 확인 요청
         linked_to_group_300: input.linkedToGroup300 ?? null,
       },
-      contract: { currentExpiry: input.currentExpiry, notifyDeadline: input.notifyDeadline, note: input.note },
+      contract: {
+        currentExpiry: input.currentExpiry, notifyDeadline: input.notifyDeadline, note: input.note,
+        ...(input.feeType ? { feeType: input.feeType, fixedFeeKrw: input.fixedFeeKrw ?? null, performanceFeeKrw: input.performanceFeeKrw ?? null } : {}),
+      },
     },
     dataOrigin: '사용자입력',
     actorName,

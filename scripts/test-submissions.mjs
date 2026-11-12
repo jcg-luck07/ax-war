@@ -17,7 +17,7 @@ const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const user = (roles) => ({ authenticated: true, email: 'x', name: 'x', roles, isAdmin: false })
 const doc = (kind, name = `${kind}.txt`) => ({ kind, filename: name, mime: 'text/plain', content: Buffer.from(`시험 ${kind}`) })
 const REQUIRED_FILES = ['draft', 'estimate'].map((k) => doc(k))
-const INF_FILES = [...REQUIRED_FILES, doc('contract'), doc('notice')] // 전속계약은 계약서와 통보 수령 증빙도 필수
+const INF_FILES = [...REQUIRED_FILES, doc('contract')] // 기존 계약서는 선택 (본 계약서는 계약 담당이 만든다)
 const custom = (label, name = `${label}.txt`) => ({ ...doc('custom', name), label })
 const CONTRIB = { gmv: '100000000', refund: '10000000', cogs: '30000000', channelFee: '7000000', shipping: '4000000', returnLogistics: '1000000' }
 const campaignValues = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-10', requested: '15000000', memo: '시험', ...CONTRIB, ...over })
@@ -119,10 +119,10 @@ try {
     const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: category === 'influencer' ? INF_FILES : REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go(inf({ refName: '' })), /이름/)
     await assert.rejects(() => go(inf(), 'INF-1'), /형식/)
-    await assert.rejects(() => go(inf(), 'INF-001'), /이미 있는 ID/)
+    await assert.rejects(() => go(inf(), 'INF-001'), /이미 있는 분류ID입니다/)
     const s = await go(inf())
     assert.match(s.title, /새별\(INF-011\).*\[신규 ID\]/)
-    await assert.rejects(() => go(inf({ refName: '다른이름' })), /다른 신규 제출/)
+    await assert.rejects(() => go(inf({ refName: '다른이름' })), /이미 있는 분류ID입니다/)
     assert.ok(checksFor('influencer', true).some((c) => c.id === 'newref')); assert.ok(!checksFor('influencer', false).some((c) => c.id === 'newref'))
     const need = await allChecks(s.id, 'influencer', true)
     await assert.rejects(() => acceptSubmission(sql, cfg, s.id, '팀장', need.filter((x) => x !== 'newref')), /확인하지 않은 항목/)
@@ -144,19 +144,16 @@ try {
   })
   await t('첨부 종류: 기안서·추계서는 필수, 계약서는 선택이고, 그 밖에는 종류 이름을 직접 적어 여러 개 추가할 수 있다', async () => {
     assert.deepEqual(ATTACHMENT_KINDS.filter((k) => k.required).map((k) => k.id), ['draft', 'estimate'])
-    assert.deepEqual(ATTACHMENT_KINDS.filter((k) => !k.required).map((k) => k.id), ['contract', 'notice'])
+    assert.deepEqual(ATTACHMENT_KINDS.filter((k) => !k.required).map((k) => k.id), ['contract', 'consult'])
     const s = await submit({ refId: 'CMP-0006', files: [...REQUIRED_FILES, custom('예상 GMV', 'gmv.csv'), custom('예상 GMV', 'gmv2.csv'), custom('주문 기록', 'orders.csv')] })
     const f = await listFiles(sql, s.id)
     assert.deepEqual(f.filter((x) => x.kind === 'custom').map((x) => `${x.label}:${x.filename}`).sort(), ['예상 GMV:gmv.csv', '예상 GMV:gmv2.csv', '주문 기록:orders.csv'])
   })
 
   await t('기안 접수 → 재무팀 회부(300억 판정) → 계약 담당 회부(계약서 첨부) → 승인권자 결정 순서로만 흘러간다', async () => {
-    // 전속계약은 계약서·통보 수령 증빙이 없으면 재무팀에 회부할 수 없다
-    const bare = await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: INF_FILES, by: '팀원' })
-    await sql`DELETE FROM submission_files WHERE submission_id = ${bare.id} AND kind = 'notice'`
-    const bareChecks = await allChecks(bare.id, 'influencer')
-    await assert.rejects(() => acceptSubmission(sql, cfg, bare.id, '팀장', bareChecks), /통보 수령 증빙/)
-    await sql`INSERT INTO submission_files (submission_id, kind, filename, mime, size, content) VALUES (${bare.id}, 'notice', 'notice.txt', 'text/plain', 3, ${Buffer.from('abc')})`
+    // 전속계약도 기존 계약서·협의서 없이 제출·접수할 수 있다 (선택 항목)
+    const noContract = await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: REQUIRED_FILES, by: '팀원' })
+    await acceptSubmission(sql, cfg, noContract.id, '팀장', await allChecks(noContract.id, 'influencer'))
     // 팀원들이 올린 안건을 하나의 기안에 모아 접수한다
     const first = await submit({ refId: 'CMP-0007' })
     const r1 = await acceptSubmission(sql, cfg, first.id, '팀장', await allChecks(first.id, 'campaign'))
@@ -191,6 +188,51 @@ try {
     // 300억 '대상 아님'으로 정한 안건은 승인권자가 평시 규정을 따른다
     const f2 = await financeRefer(sql, cfg, r1.caseId, { linked: false, by: '재무팀' })
     assert.notEqual(f2.authorityLabel, null)
+  })
+
+  await t('필수 항목 없이 제출: 허용 표시를 하면 비어 있어도 제출되지만, 형식 오류는 막고 접수는 보완 전까지 못 한다', async () => {
+    const bare = { category: 'campaign', refId: 'CMP-0010', values: { memo: '일부만' }, files: [], by: '팀원' }
+    await assert.rejects(() => submitIntake(sql, bare), /입력해 주세요/) // 허용하지 않으면 그대로 막힌다
+    await assert.rejects(() => submitIntake(sql, { ...bare, values: { settlementDate: '7월 1일' }, allowIncomplete: true }), /YYYY-MM-DD/) // 형식은 여전히 검사
+    const s = await submitIntake(sql, { ...bare, allowIncomplete: true })
+    assert.match(s.title, /금액 미입력/); assert.equal(s.input.incomplete, '1')
+    const checks = await allChecks(s.id, 'campaign')
+    await assert.rejects(() => acceptSubmission(sql, cfg, s.id, '팀장', checks), /필수 항목이 비어 있어/)
+    await returnSubmission(sql, s.id, '마케팅 팀장', '필수 항목 보완 필요')
+    assert.equal((await listSubmissions(sql)).find((x) => x.id === s.id).status, 'returned')
+  })
+
+  await t('연관 안건 경고: 캠페인은 전속계약 불승인이 1건이라도 있으면, 전속계약은 최근 캠페인이 불승인이거나 최근 5건 중 2건 이상 불승인이면 경고한다', async () => {
+    const { relatedWarning } = await import('@/lib/app/related-warning')
+    const row = (id, category, status, deadline, influencerId = 'INF-001') => ({ id, title: `T${id}`, code: `C${id}`, category, status, outcome: status === 'open' ? null : status, deadline, influencerId })
+    const camp = { category: 'campaign', influencerId: 'INF-001', id: 100 }
+    const contract = { category: 'influencer', influencerId: 'INF-001', id: 200 }
+    // 캠페인: 전속계약 불승인 1건
+    assert.equal(relatedWarning(camp, [row(1, 'influencer', 'approved', '2025-01-01')], '혜인'), null)
+    assert.match(relatedWarning(camp, [row(1, 'influencer', 'rejected', '2025-01-01')], '혜인'), /전속계약 갱신이 부결된 안건이 1건/)
+    assert.equal(relatedWarning(camp, [row(1, 'influencer', 'rejected', '2025-01-01', 'INF-002')], '혜인'), null, '다른 인플루언서는 해당 없음')
+    // 전속계약: 가장 최근 캠페인 불승인
+    assert.match(relatedWarning(contract, [row(1, 'campaign', 'approved', '2025-01-01'), row(2, 'campaign', 'rejected', '2025-06-01')], '혜인'), /가장 최근 캠페인/)
+    // 최근 5건 중 2건 이상 (가장 최근은 승인)
+    const five = [row(1, 'campaign', 'approved', '2025-06-01'), row(2, 'campaign', 'rejected', '2025-05-01'), row(3, 'campaign', 'approved', '2025-04-01'), row(4, 'campaign', 'rejected', '2025-03-01'), row(5, 'campaign', 'approved', '2025-02-01')]
+    assert.match(relatedWarning(contract, five, '혜인'), /5건 중 2건/)
+    // 6번째(5건 밖)의 불승인은 세지 않고, 아직 결정 안 된 안건도 세지 않는다
+    assert.equal(relatedWarning(contract, [...five.map((r) => (r.status === 'rejected' && r.id === 4 ? { ...r, status: 'approved', outcome: 'approved' } : r)), row(6, 'campaign', 'rejected', '2024-01-01'), row(7, 'campaign', 'open', '2025-12-01')], '혜인'), null)
+  })
+
+  await t('계약 담당이 올린 계약서는 그 단계가 열려 있는 동안 뺄 수 있고, 다음 단계로 넘어가면 뺄 수 없다', async () => {
+    const { addCaseFile, removeCaseFile, listCaseFiles, contractRefer, financeRefer } = await import('@/lib/modules/w02/handoff')
+    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-005', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-24', requested: '400000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: INF_FILES, by: '팀원' })
+    const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
+    const id = await addCaseFile(sql, { caseId: r.caseId, kind: 'contract', filename: 'c.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' })
+    assert.equal((await listCaseFiles(sql, r.caseId)).length, 1)
+    await removeCaseFile(sql, id, '계약 담당')
+    assert.equal((await listCaseFiles(sql, r.caseId)).length, 0)
+    await assert.rejects(() => addCaseFile(sql, { caseId: r.caseId, kind: 'notice', filename: 'n.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' }), /통보·회신 기록 보관 단계가 아니라서/)
+    const id2 = await addCaseFile(sql, { caseId: r.caseId, kind: 'contract', filename: 'c2.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' })
+    await financeRefer(sql, cfg, r.caseId, { linked: false, by: '재무팀' })
+    await contractRefer(sql, r.caseId, '계약 담당')
+    await assert.rejects(() => removeCaseFile(sql, id2, '계약 담당'), /다음 단계로 넘어가서/)
   })
 
   console.log(`\n${n}개 시험 모두 통과`)

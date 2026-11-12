@@ -8,6 +8,7 @@ import { digitsOnly, formatDateInput, formatMoneyInput } from '@/lib/app/date-in
 import { fmtWon } from '@/lib/app/format'
 import { Button, toast } from '@heroui/react'
 import { acceptSubmissionAction, returnSubmissionAction } from '@/app/actions'
+import { useConfirm } from '@/components/ax'
 import { CONTRIBUTION_FIELDS, CONTRIBUTION_FORMULA, calcContribution, validateContribution } from '@/lib/metrics/contribution-calc'
 
 export interface CategoryView {
@@ -25,6 +26,8 @@ export interface CategoryView {
   /** 신규 ID 앞부분 (예: INF-) — 분류를 고르면 자동으로 적히고, 사용자는 뒤의 숫자만 쓴다 */
   idPrefix: string
   idDigits: number
+  /** 이미 쓰고 있는 분류 ID (원본 + 다른 신규 제출) — 신규로 같은 ID 를 넣으면 경고한다 */
+  takenIds: string[]
   /** 캠페인의 소속 인플루언서 선택지 (신규 캠페인일 때) */
   parents: { id: string; label: string }[]
 }
@@ -67,20 +70,31 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
   // 직접 종류 이름을 적어 추가하는 첨부 (+ 버튼)
   const [extras, setExtras] = useState<{ label: string; files: File[] }[]>([])
   const [formKey, setFormKey] = useState(0)
+  // 필수 항목을 채우지 않고 제출하기 — 켜면 비어 있어도 제출할 수 있고, 누를 때 한 번 더 묻는다
+  const [allowInc, setAllowInc] = useState(false)
+  const confirm = useConfirm()
   const cat = categories.find((c) => c.id === catId)
   const isNew = refId === NEW
   const newDigits = (vals.newId ?? '').replace(/\D/g, '').slice(0, cat?.idDigits ?? 4)
   const newIdFull = cat ? `${cat.idPrefix}${newDigits.padStart(cat.idDigits, '0')}` : ''
+  const idTaken = Boolean(cat && isNew && newDigits && cat.takenIds.includes(newIdFull))
   const set = (k: string) => (v: string) => setVals((s) => ({ ...s, [k]: v }))
 
   const contribKeys = CONTRIBUTION_FIELDS.map((f) => f.key)
   const calcRaw = Object.fromEntries(contribKeys.map((k) => [k, vals[k] ?? '']))
-  const calcError = validateContribution({ ...calcRaw, marketingSpend: vals.requested ?? '' }, contribKeys)
+  // 인플루언서 계약은 계약 방식에 따른 고정 피 + 성과 피가 요청금액이다
+  const feeType = vals.feeType ?? ''
+  const needFixed = feeType === '고정 피' || feeType === '혼합 피'
+  const needPerf = feeType === '성과 피' || feeType === '혼합 피'
+  const requestedStr = cat?.id === 'influencer'
+    ? String((needFixed ? Number(vals.fixedFee || 0) : 0) + (needPerf ? Number(vals.performanceFee || 0) : 0) || '')
+    : (vals.requested ?? '')
+  const calcError = validateContribution({ ...calcRaw, marketingSpend: requestedStr }, contribKeys)
   const result = useMemo(() => {
-    if (calcError || !(Number(vals.requested) > 0)) return null
+    if (calcError || !(Number(requestedStr) > 0)) return null
     const n = (k: string) => Number(vals[k])
-    return calcContribution({ gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'), marketingSpend: Number(vals.requested) })
-  }, [vals, calcError])
+    return calcContribution({ gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'), marketingSpend: Number(requestedStr) })
+  }, [vals, calcError, requestedStr])
 
   // 아직 남은 것 — 모두 채워야 제출할 수 있다
   const todo: string[] = []
@@ -91,23 +105,47 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
     if (!refId) todo.push(cat.refLabel)
     if (isNew) {
       if (!newDigits || Number(newDigits) === 0) todo.push('신규 ID 번호')
+      if (idTaken) todo.push('이미 있는 분류ID')
       if (!(vals.refName ?? '').trim()) todo.push('신규 이름')
       if (cat.id === 'campaign' && !(vals.parentInfluencerId ?? '')) todo.push('소속 인플루언서')
     }
     for (const f of visibleFields) if (f.required && !(vals[f.name] ?? '').trim()) todo.push(f.label)
+    if (cat.id === 'influencer') {
+      if (!feeType) todo.push('계약 방식')
+      if (needFixed && !(Number(vals.fixedFee) > 0)) todo.push('고정 피 금액')
+      if (needPerf && !(Number(vals.performanceFee) > 0)) todo.push('성과 피 금액')
+    }
     if (calcError) todo.push('공헌이익 계산 칸')
     for (const k of kinds) if (isRequired(k) && !(files[k.id]?.length)) todo.push(`첨부: ${k.label}`)
     extras.forEach((x, i) => { if (!x.label.trim() || x.files.length === 0) todo.push(`추가 첨부 ${i + 1}: ${!x.label.trim() ? '종류 이름' : '파일'}`) })
   }
 
-  const submit = () =>
+  // 확인창은 전환(start) 밖에서 기다려야 해요. 전환 안에서 기다리면 확인창을 띄우는 상태 변경이 전환이 끝날 때까지 미뤄져 버튼이 멈춰요.
+  const submit = async () => {
+    if (!cat) return
+    if (todo.length > 0) {
+      const ok = await confirm({
+        title: '정말 제출하시겠습니까?',
+        description: '필수 항목이 비어 있어요. 이대로 제출하면 팀장이 접수할 수 없고 반려될 수 있어요.',
+        details: <ul className="list-disc pl-5 t-small">{todo.map((x) => <li key={x}>{x}</li>)}</ul>,
+        confirmLabel: '제출',
+        cancelLabel: '취소',
+        variant: 'warning',
+      })
+      if (!ok) return
+    }
+    send(cat)
+  }
+
+  const send = (cat: NonNullable<typeof categories[number]>) =>
     start(async () => {
-      if (!cat) return
       const fd = new FormData()
+      if (todo.length > 0) fd.set('allowIncomplete', '1')
       fd.set('category', cat.id)
       fd.set('refId', isNew ? newIdFull : refId)
       if (isNew) fd.set('v:isNewRef', '1')
       for (const [k, v] of Object.entries(vals)) fd.set(`v:${k}`, v)
+      if (cat.id === 'influencer') fd.set('v:requested', requestedStr)
       for (const [kind, list] of Object.entries(files)) list.forEach((f, i) => fd.append(`f:${kind}#${i}`, f))
       extras.forEach((x, i) => { fd.set(`cl:${i}`, x.label.trim()); x.files.forEach((f, j) => fd.append(`cf:${i}#${j}`, f)) })
       try {
@@ -115,7 +153,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
         const r = (await res.json()) as { ok: boolean; message: string }
         if (r.ok) {
           toast.success(r.message)
-          setRefId(''); setVals({}); setFiles({}); setExtras([]); setFormKey((x) => x + 1)
+          setRefId(''); setVals({}); setFiles({}); setExtras([]); setAllowInc(false); setFormKey((x) => x + 1)
           router.refresh()
         } else toast.danger(r.message)
       } catch {
@@ -151,8 +189,8 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               <span className="font-semibold">{cat.refLabel} <span className="t-caption">({cat.idRule}, 전사 ID 규칙)</span></span>
               <select className={INPUT} value={refId} onChange={(e) => setRefId(e.target.value)}>
                 <option value="">{cat.refLabel}를 고르세요</option>
-                {cat.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                 <option value={NEW}>➕ 신규 ID 입력 (원본에 없는 {cat.refLabel.replace(' ID', '')})</option>
+                {cat.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
               </select>
             </label>
             {isNew && (
@@ -163,7 +201,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                     <span className={`${INPUT} w-auto bg-muted font-semibold`} style={{ borderRight: 0 }}>{cat.idPrefix}</span>
                     <input className={INPUT} inputMode="numeric" maxLength={cat.idDigits} placeholder={'0'.repeat(cat.idDigits)} value={newDigits} onChange={(e) => set('newId')(e.target.value.replace(/\D/g, ''))} aria-label={`신규 ${cat.refLabel} 번호`} />
                   </span>
-                  {newDigits && <span className="t-caption">등록될 ID: {newIdFull}</span>}
+                  {idTaken ? <span className="t-caption font-semibold text-danger" role="alert">이미 있는 분류ID입니다!</span> : newDigits && <span className="t-caption">등록될 ID: {newIdFull}</span>}
                 </label>
                 <label className="flex flex-col gap-1 t-small">
                   <span className="font-semibold">신규 {cat.refLabel.replace(' ID', '')} 이름 *</span>
@@ -194,6 +232,32 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                 />
               </label>
             ))}
+            {cat.id === 'influencer' && (
+              <>
+                <label className="flex flex-col gap-1 t-small">
+                  <span className="font-semibold">계약 방식 *</span>
+                  <select className={INPUT} value={feeType} onChange={(e) => set('feeType')(e.target.value)}>
+                    <option value="">계약 방식을 고르세요</option>
+                    <option value="고정 피">고정 피</option>
+                    <option value="성과 피">성과 피</option>
+                    <option value="혼합 피">혼합 피 (고정 피 + 성과 피)</option>
+                  </select>
+                </label>
+                {needFixed && (
+                  <label className="flex flex-col gap-1 t-small">
+                    <span className="font-semibold">고정 피 금액 (연, 원) *</span>
+                    <input className={INPUT} inputMode="numeric" placeholder="예: 2,800,000,000" value={formatMoneyInput(digitsOnly(vals.fixedFee ?? ''))} onChange={(e) => set('fixedFee')(digitsOnly(e.target.value))} />
+                  </label>
+                )}
+                {needPerf && (
+                  <label className="flex flex-col gap-1 t-small">
+                    <span className="font-semibold">성과 피 금액 (연 예상, 원) *</span>
+                    <input className={INPUT} inputMode="numeric" placeholder="예: 300,000,000" value={formatMoneyInput(digitsOnly(vals.performanceFee ?? ''))} onChange={(e) => set('performanceFee')(digitsOnly(e.target.value))} />
+                  </label>
+                )}
+                {feeType && <div className="flex flex-col gap-1 t-small"><span className="font-semibold">요청금액 합계 <span className="t-caption">(자동)</span></span><div className={`${INPUT} bg-muted`}>{requestedStr ? fmtWon(Number(requestedStr)) : '금액을 입력하세요'}</div></div>}
+              </>
+            )}
             <label className="flex flex-col gap-1 t-small sm:col-span-2 lg:col-span-3">
               <span className="font-semibold">메모</span>
               <input className={INPUT} placeholder="팀장에게 전할 내용, 특이사항" value={vals.memo ?? ''} onChange={(e) => set('memo')(e.target.value)} />
@@ -243,7 +307,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               ))}
               <div className="flex flex-col gap-1 t-small">
                 <span>마케팅 지출 <span className="t-caption">(= 요청금액, 자동)</span></span>
-                <div className={`${INPUT} bg-muted`}>{vals.requested ? fmtWon(Number(vals.requested)) : '요청금액을 입력하세요'}</div>
+                <div className={`${INPUT} bg-muted`}>{requestedStr ? fmtWon(Number(requestedStr)) : '요청금액을 입력하세요'}</div>
               </div>
             </div>
             <div className="rounded-card border border-default p-2">
@@ -264,8 +328,14 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
 
           <div className="flex flex-col gap-1 border-t border-default pt-2">
             {todo.length > 0 && <p className="t-caption">아직 남은 것: {todo.join(' · ')}</p>}
+            {todo.length > 0 && (
+              <label className="flex cursor-pointer items-center gap-2 t-small">
+                <input type="checkbox" checked={allowInc} onChange={(e) => setAllowInc(e.target.checked)} />
+                필수 항목을 채우지 않고 제출하기
+              </label>
+            )}
             <div>
-              <Button isDisabled={pending || todo.length > 0} onPress={submit}>
+              <Button isDisabled={pending || (todo.length > 0 && !allowInc) || !refId || (isNew && !newDigits) || idTaken} onPress={submit}>
                 {cat.acceptLabel}에게 보고하기
               </Button>
             </div>

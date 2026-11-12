@@ -46,6 +46,10 @@ export function prepTasks(deadline: string | null, contractTitle: string): TaskS
   ]
 }
 
+/** 재검토 뒤 다시 올릴 때: 승인 앞 단계 작업을 다시 연다 (once 표시를 빼서 끝난 작업이 있어도 새로 만든다) */
+export const redoPrepTasks = (deadline: string | null, contractTitle: string): TaskSpec[] =>
+  prepTasks(deadline, contractTitle).map((t) => ({ ...t, detail: { ...(t.detail ?? {}), once: false } }))
+
 export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
   const describeFact: CaseHandler['describeFact'] = (fact) => {
     if (fact === 'in_cash_breach_window') {
@@ -72,22 +76,34 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
     describeFact,
     deriveFacts: (c, ctx) => ({ in_cash_breach_window: inBreachWindow(c, ctx as W02Ctx) }),
     onEvaluated: (c): TaskSpec[] => prepTasks(c.deadline, '계약조건·기한 확인'),
+    onResubmit: (c): TaskSpec[] => redoPrepTasks(c.deadline, '계약조건·기한 확인'),
     onDecision: (c, outcome): TaskSpec[] => {
       const deadline = c.deadline
       if (outcome === 'approved') {
         return [
           { key: 'doc-conditions', taskType: 'document', title: '승인조건 문서화', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
-          { key: 'notify-counterparty', taskType: 'notify', title: '상대방(인플루언서 소속 에이전시)에 결과 통보 — 통보 기한 전', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, note: `기한(${deadline}) 이후 통보는 효력이 없고 동일 조건 자동 갱신이 일어남` }, dataOrigin: '가정' },
-          { key: 'record-reply', taskType: 'record', title: '통보·회신 기록 보관', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
+          { key: 'notify-counterparty', taskType: 'notify', title: '상대방(인플루언서 소속 에이전시)에 계약 결과 통보 — 통보 기한 전', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, after: 'doc-conditions', note: `기한(${deadline}) 이후 통보는 효력이 없고 동일 조건 자동 갱신이 일어남` }, dataOrigin: '가정' },
+          { key: 'record-reply', taskType: 'record', title: '통보·회신 기록 보관 (통보 회신 증빙 첨부)', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN, after: 'notify-counterparty' }, dataOrigin: '가정' },
+          // Masil 대표가 승인하는 안건은 어차피 그룹 보고를 해야 한다 (승인권한 정책)
+          ...((c.payload as Payload).evaluation?.decision?.authority === 'masil_ceo' ? [{ key: 'group-report', taskType: 'report', title: '그룹 보고 (Masil 대표 승인 건)', assigneeRole: '마케팅', dueDate: deadline, detail: { source: '00_common/approval_authority_policy.md', after: 'record-reply' }, dataOrigin: '원본' as const }] : []),
         ]
       }
       if (outcome === 'rejected') {
+        // 부결 = 계약을 연장하지 않는다. 계약 담당이 후속조치(계약 미갱신 통지서 결재 보고)를 하고, 승인권자가 다시 승인하면 통지서를 발송한다.
         return [
-          { key: 'rethink-before-deadline', taskType: 'review', title: '기한 전 재검토 — 조건 변경안 또는 해지 통보 검토', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN, warning: `${deadline} 까지 통보하지 않으면 동일 조건으로 1년 자동 갱신(체결로 간주)되고, 이후 해지하면 위약금이 생길 수 있음` }, dataOrigin: '가정' },
-          { key: 'watch-deadline', taskType: 'monitor', title: '통보 기한 모니터링 — 미결정이면 자동 갱신됨', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
+          { key: 'request-nonrenewal', taskType: 'document', title: '후속조치: 계약 미갱신 통지서 결재 보고 — 승인권자의 승인이 필요해요', assigneeRole: '계약 담당', dueDate: deadline, detail: { basis: '사용자 지정 절차', warning: `${deadline} 까지 통보하지 않으면 동일 조건으로 1년 자동 갱신(체결로 간주)되고, 이후 해지하면 위약금이 생길 수 있음` }, dataOrigin: '가정' },
         ]
       }
-      return [{ key: 'hold-reason', taskType: 'review', title: '보류 사유 확인 후 재상신 준비', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: BPMN }, dataOrigin: '가정' }]
+      // 재검토: 처음 안건을 올린 부서(마케팅)로 돌아가 보완한 뒤 다시 절차를 진행한다
+      return [{ key: 'hold-reason', taskType: 'review', title: '재검토 요청 사항 보완 후 재보고', assigneeRole: '마케팅', dueDate: deadline, detail: { basis: '사용자 지정 절차' }, dataOrigin: '가정' }]
+    },
+    // 불연장 통보 보고에 대한 승인권자의 결정: 승인 → 통보 발송, 재검토 → 계약 담당이 보완해 다시 보고
+    onFollowupDecision: (c, kind, outcome): TaskSpec[] => {
+      if (kind !== 'nonrenewal') return []
+      if (outcome === 'approved') {
+        return [{ key: 'send-nonrenewal', taskType: 'notify', title: '상대방에 계약 불연장(미갱신) 통지서 발송 — 통보 기한 전', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { basis: '사용자 지정 절차', note: `기한(${c.deadline}) 이후 통보는 효력이 없고 동일 조건 자동 갱신이 일어남` }, dataOrigin: '가정' }]
+      }
+      return [{ key: 'request-nonrenewal', taskType: 'document', title: '계약 미갱신 통지서 보완 후 다시 결재 보고', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { basis: '사용자 지정 절차' }, dataOrigin: '가정' }]
     },
   }
 
@@ -96,46 +112,42 @@ export function makeW02Handlers(deps: W02Deps): Record<string, CaseHandler> {
     describeFact,
     deriveFacts: (c, ctx) => ({ in_cash_breach_window: inBreachWindow(c, ctx as W02Ctx) }),
     onEvaluated: (c): TaskSpec[] => prepTasks(c.deadline, '계약 확정기한·전속계약 확인'),
+    onResubmit: (c): TaskSpec[] => redoPrepTasks(c.deadline, '계약 확정기한·전속계약 확인'),
     onDecision: (c, outcome): TaskSpec[] => {
       const p = c.payload as Payload
       const also = p.evaluation?.decision?.also ?? []
       if (outcome === 'approved') {
+        // 한 방향으로만: 승인조건 문서화(계약 담당) → 상대방에 계약 통보(마케팅 = 원팀) → 통보·회신 기록 보관(계약 담당) → (총액 1억 초과 시) 그룹 보고
         const t: TaskSpec[] = [
-          { key: 'prepare-execution', taskType: 'execute', title: '캠페인 집행 준비 (계약 확정기한 전 확정 여부 확인)', assigneeRole: '마케팅', dueDate: c.deadline, detail: { basis: BPMN }, dataOrigin: '가정' },
-          { key: 'finance-cash-line', taskType: 'notify', title: '재무: 집행 예정일 지급액을 현금 재전망 추가 유출 줄에 반영', assigneeRole: '재무', dueDate: outflowDate(c), detail: { why: '원본 전망 포함분과 분리된 추가 유출(A05)' }, dataOrigin: '가정' },
+          { key: 'doc-conditions', taskType: 'document', title: '승인조건 문서화', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { basis: '사용자 지정 절차' }, dataOrigin: '가정' },
+          { key: 'notify-counterparty', taskType: 'notify', title: '상대방에 계약 통보 — 계약 확정기한 전', assigneeRole: '마케팅', dueDate: c.deadline, detail: { basis: '사용자 지정 절차', after: 'doc-conditions', note: `확정기한(${c.deadline})이 지나면 자동 확정되어 철회할 수 없음` }, dataOrigin: '가정' },
+          { key: 'record-reply', taskType: 'record', title: '통보·회신 기록 보관 (통보 회신 증빙 첨부)', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { basis: '사용자 지정 절차', after: 'notify-counterparty' }, dataOrigin: '가정' },
         ]
-        if (also.includes('그룹 보고')) t.push({ key: 'group-report', taskType: 'report', title: '그룹 보고 (승인권한 정책: 총액 1억 원 초과 시 Masil 대표 승인 + 그룹 보고)', assigneeRole: '마케팅', dueDate: c.deadline, detail: { source: '00_common/approval_authority_policy.md' }, dataOrigin: '원본' })
+        if (p.evaluation?.decision?.authority === 'masil_ceo' || also.includes('그룹 보고')) t.push({ key: 'group-report', taskType: 'report', title: '그룹 보고 (Masil 대표 승인 건)', assigneeRole: '마케팅', dueDate: c.deadline, detail: { source: '00_common/approval_authority_policy.md', after: 'record-reply' }, dataOrigin: '원본' })
         return t
       }
       if (outcome === 'rejected') {
+        // 부결 = 이 캠페인을 진행하지 않는다. 계약 담당이 상대방 회신·기록을 맡는다.
         return [
-          { key: 'rethink-allocation', taskType: 'review', title: '[제안] 부결 후 예산 배분 재검토 — 효율 상위 인플루언서 검토 (표본 한계 명시)', assigneeRole: '마케팅', dueDate: null, detail: { note: '원본 문서에 없는 제안입니다. 과거 평균 효율을 늘린 예산에 곱하면 선형성·포화를 가정하게 됩니다(A05).' }, dataOrigin: '가정' },
-          { key: 'check-contract', taskType: 'monitor', title: '해당 인플루언서의 전속계약은 별개 결정 — 통보 기한 확인', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { source: '00_common/approval_authority_policy.md', note: '기안을 부결해도 전속계약은 갱신될 수 있음' }, dataOrigin: '원본' },
+          { key: 'stop-campaign', taskType: 'record', title: '캠페인 집행 중단 처리 — 상대방에 진행하지 않는다고 회신하고 기록 보관 (해당 인플루언서의 전속계약은 별개 결정이므로 통보 기한도 함께 확인)', assigneeRole: '계약 담당', dueDate: c.deadline, detail: { basis: '사용자 지정 절차', source: '00_common/approval_authority_policy.md', note: '기안을 부결해도 전속계약은 갱신될 수 있음' }, dataOrigin: '가정' },
         ]
       }
-      return [{ key: 'hold-reason', taskType: 'review', title: '보류 사유 확인 후 재상신 준비', assigneeRole: '마케팅', dueDate: c.deadline, detail: {}, dataOrigin: '가정' }]
+      return [{ key: 'hold-reason', taskType: 'review', title: '재검토 요청 사항 보완 후 재보고', assigneeRole: '마케팅', dueDate: c.deadline, detail: { basis: '사용자 지정 절차' }, dataOrigin: '가정' }]
     },
   }
 
   return { [CONTRACT_CASE_TYPE]: contract, [EXPANSION_CASE_TYPE]: expansion }
 }
 
-/** 화면에 보여 줄 보충 설명(마감과 하회 구간의 관계 등). 엔진 상태를 바꾸지 않는다. */
+/** 화면에 보여 줄 보충 설명. 돈이 나가는 날(집행·지급 예정일)이 현금 하회 예상 구간 안일 때만 나온다(평시에는 없음). 엔진 상태를 바꾸지 않는다. */
 export function w02Notes(c: DecisionCase, ctx: W02Ctx): string[] {
-  const notes: string[] = []
   const date = outflowDate(c)
   const wins = ctx.cashWindows
-  if (c.caseType === EXPANSION_CASE_TYPE && wins && wins.length && c.deadline) {
-    const first = wins[0]
-    if (c.deadline < first.start) {
-      notes.push(`확정기한(${c.deadline})이 하회 구간 시작(${first.start})보다 앞서 도래합니다 — 기한을 넘기면 자동 확정되어 철회할 수 없으므로 기한 전에 상신해야 합니다. (근거: covenant_terms_ms.md)`)
-    }
-  }
-  if (date && wins) {
-    const inside = dateInBreachWindow(wins, date)
-    notes.push(`돈이 나가는 날 ${date}: ${inside ? '현금 하회 예상 구간 안' : '하회 구간 밖'}`)
-  } else if (c.caseType === CONTRACT_CASE_TYPE) {
-    notes.push('고정 피 지급 일정이 문서에 없어 현금 유출일을 알 수 없습니다(미확인).')
+  if (!date || !wins || !dateInBreachWindow(wins, date)) return []
+  const notes = [`돈이 나가는 날 ${date}: 현금 하회 예상 구간 안 (${wins.find((w) => date >= w.start && date <= w.end)?.start} ~ ${wins.find((w) => date >= w.start && date <= w.end)?.end})`]
+  const first = wins[0]
+  if (c.deadline && c.deadline < first.start) {
+    notes.push(`확정기한(${c.deadline})이 하회 구간 시작(${first.start})보다 앞서 도래합니다 — 기한을 넘기면 자동 확정되어 철회할 수 없으므로 기한 전에 보고해야 합니다. (근거: covenant_terms_ms.md)`)
   }
   return notes
 }

@@ -18,7 +18,7 @@ export default async function CashPage() {
     return (
       <AppShell>
         <div className="flex flex-col gap-3">
-          <PageHeader title="현금 재전망" description="승인 권한이 있는 역할만 볼 수 있는 화면이에요." />
+          <PageHeader title="현금흐름" description="승인 권한이 있는 역할과 재무팀만 볼 수 있는 화면이에요." />
           <Card><Card.Content><p className="t-small">내 역할({user.name})로는 이 화면을 볼 수 없어요.</p></Card.Content></Card>
         </div>
       </AppShell>
@@ -35,7 +35,7 @@ export default async function CashPage() {
     <AppShell>
       <div className="flex flex-col gap-3">
         <PageHeader
-          title="현금 재전망"
+          title="현금흐름"
           description="Masil 단독 기준(그룹 지원 제외)으로 매 영업일 종가가 최소현금 30억 원 아래로 내려가는지 봐요. 자금일보는 실적만 담고 있어서 미래는 회수·지급 일정을 직접 합산해요."
         />
         {!inputs ? (

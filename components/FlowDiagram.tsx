@@ -6,7 +6,7 @@
 import type { EdgeState, FlowDef, FlowNode, NodeState } from '@/lib/process/types'
 import type { FlowState } from '@/lib/process/state'
 
-const COL_W = 176
+const COL_W = 216
 const LABEL_W = 112
 const LANE_H = 132
 const NODE_W = 146
@@ -95,7 +95,7 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid, onSelect, sel
                 lx = (x1 + x2) / 2
                 ly = A.y - 6
               } else {
-                const mx = x1 + 22
+                const mx = x1 + 26 // 꺾이는 자리 — 화살표 머리 앞에 충분한 직선 구간이 남도록
                 d = `M${x1},${A.y} H${mx} V${B.y} H${x2}`
                 lx = mx + 4
                 ly = B.y - 6

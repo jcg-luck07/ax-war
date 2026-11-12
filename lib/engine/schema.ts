@@ -45,7 +45,7 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
   `
   await sql`CREATE INDEX IF NOT EXISTS case_events_case_idx ON case_events (case_id, created_at)`
 
-  // ③ 승인 — 권한 있는 사람의 결정. 안건 하나에 여러 번(재상신) 생길 수 있다.
+  // ③ 승인 — 권한 있는 사람의 결정. 안건 하나에 여러 번(재보고) 생길 수 있다.
   await sql`
     CREATE TABLE IF NOT EXISTS approvals (
       id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -58,6 +58,7 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       created_at    timestamptz NOT NULL DEFAULT now()
     )
   `
+  await sql`ALTER TABLE approvals ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'main'` // main: 안건 승인 / nonrenewal: 부결 뒤 계약 불연장 통보의 승인
   await sql`CREATE INDEX IF NOT EXISTS approvals_case_idx ON approvals (case_id, status)`
 
   // ④ 작업 — 결정 뒤에 생기는 후속 일. 정보 부족 때의 '확인 요청'도 여기에 만든다.
@@ -152,6 +153,7 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       created_at  timestamptz NOT NULL DEFAULT now()
     )
   `
+  await sql`ALTER TABLE case_files ADD COLUMN IF NOT EXISTS revision integer` // 수정 보고 첨부면 몇 번째 수정 보고인지
   await sql`CREATE INDEX IF NOT EXISTS case_files_case_idx ON case_files (case_id)`
 
   // ⑥ 원본 행 복사본 — CSV 한 줄을 그대로 담는다. 원본 파일은 읽기만 하고 절대 고치지 않는다.

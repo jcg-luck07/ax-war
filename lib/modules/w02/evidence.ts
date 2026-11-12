@@ -44,6 +44,7 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
     if (a.spearman !== null) {
       evidence.push({ label: '배분-성과 정렬도', value: `${a.spearman.toFixed(2)} (${a.direction})`, note: '광고비 순위와 공헌이익 순위의 상관, 10명 표본' })
     }
+    caveats.push('공헌이익·실질 ROAS 의 인플루언서 비용(influencer_fee_krw)은 캠페인 진행에 따른 별도 진행비용이며, 연 전속 고정 피와 성과 피는 포함하지 않는다(가정, 마케팅 회신 전). 인플루언서에게 나가는 총비용 기준으로는 더 낮은 값이다.')
     caveats.push('마케팅 성과는 대표 표본 자료라 순위·비중·방향만 말하고, 연간 금액이나 계약 금액과 곱해 손익으로 환산하지 않는다.')
     caveats.push(`공헌이익은 원가·배송비를 주문 1건에 ${ctx.perf.assumptions.unitsPerOrder}회 적용한다는 가정으로 계산했고, 긴급배송 추가비용·CS 문의 비용은 자료가 없어 빠져 있다(실제보다 낙관적일 수 있음).`)
     if (ctx.perf.alignment.direction === '반대 방향' && ctx.perf.alignment.spearman !== null && ctx.perf.alignment.spearman > -0.5) {
@@ -168,7 +169,7 @@ export function contractPackage(view: CaseView, asOf: string): StepPackage {
     lines.push('승인권한: 연 10억 원 초과 전속계약은 CEO/이사회, 미통보 자동 갱신도 체결로 봄 — 00_common/approval_authority_policy.md')
   } else if (c.caseType === EXPANSION_CASE_TYPE) {
     const dl = payload.plan?.contract_deadline ?? c.deadline
-    lines.push(`계약 확정기한: ${dl ?? '없음'} (${ddayLabel(dl ?? null, asOf)}) — 넘기면 자동 확정되어 철회 불가, 하회 구간보다 앞서면 기한 전에 상신 (covenant_terms_ms.md)`)
+    lines.push(`계약 확정기한: ${dl ?? '없음'} (${ddayLabel(dl ?? null, asOf)}) — 넘기면 자동 확정되어 철회 불가, 하회 구간보다 앞서면 기한 전에 보고 (covenant_terms_ms.md)`)
     lines.push('캠페인 확대 기안과 연간 전속계약은 별개 결정 — 기안을 부결해도 전속계약 자동 갱신은 막지 못함 (W02 안내)')
   }
   if (inf === CONTRACT_NOTICE.influencerId) {

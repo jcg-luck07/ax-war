@@ -33,7 +33,7 @@ export async function POST(req: Request) {
         files.push({ kind: 'custom', label: String(form.get(`cl:${idx}`) ?? ''), filename: v.name, mime: v.type, content: Buffer.from(await v.arrayBuffer()) })
       }
     }
-    const sub = await submitIntake(sql, { category, refId: String(form.get('refId') ?? ''), values, files, by: user.name })
+    const sub = await submitIntake(sql, { category, refId: String(form.get('refId') ?? ''), values, files, by: user.name, allowIncomplete: form.get('allowIncomplete') === '1' })
     revalidatePath('/', 'layout')
     return NextResponse.json({ ok: true, message: `${roleLabel(cat.acceptRole)}에게 보고했어요. 접수되면 기안 목록에 나타나요.`, id: sub.id })
   } catch (e) {

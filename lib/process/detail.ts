@@ -39,7 +39,7 @@ export interface DetailCtx {
 
 const STATE_TEXT: Record<NodeState, string> = { done: '끝남', current: '지금 해야 함', todo: '대기', blocked: '앞 단계가 끝나야 함', skipped: '이번에는 해당 없음' }
 const TASK_STATUS: Record<string, string> = { open: '진행 중', done: '완료', cancelled: '취소됨' }
-const APPROVAL_STATUS: Record<string, string> = { pending: '결정 대기', approved: '승인', rejected: '부결', on_hold: '보류', superseded: '대체됨' }
+const APPROVAL_STATUS: Record<string, string> = { pending: '결정 대기', approved: '승인', rejected: '부결', on_hold: '재검토', superseded: '대체됨' }
 const keyOf = (t: { detail: Record<string, unknown> }) => String(t.detail.key ?? '')
 const ANSWER = (r: Record<string, unknown> | null) =>
   r ? Object.entries((r as { answers?: Record<string, unknown> }).answers ?? {}).map(([k, v]) => `${k}: ${String(v)}`) : []
@@ -126,6 +126,13 @@ export function buildNodeDetails(def: FlowDef, state: FlowState, view: CaseView,
         } else {
           sections.push({ heading: '당시 판단 근거 — 공헌이익', lines: ctx.primaryEvidence })
         }
+        break
+      }
+      case 'approval2': {
+        const lines = view.approvals
+          .filter((a) => (a.kind ?? 'main') !== 'main')
+          .map((a) => `${ctx.roleLabel(a.requiredRole)} · ${APPROVAL_STATUS[a.status] ?? a.status}${a.decidedBy ? ` · ${a.decidedBy}` : ''}${a.comment ? ` — ${a.comment}` : ''}`)
+        sections.push({ heading: '계약 불연장 통지서 승인 기록', lines: lines.length ? lines : ['아직 보고하지 않았어요.'] })
         break
       }
       case 'task': {

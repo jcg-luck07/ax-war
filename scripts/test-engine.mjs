@@ -135,7 +135,7 @@ try {
     const ap = (await E.getCaseView(sql, r0.caseId)).approvals[0]
     const d = await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'ceo_board', byName: '강세연', comment: '성과 대비 과다' })
     assert.equal(d.statusAfter, 'rejected'); assert.equal(d.taskIds.length, 1)
-    await assert.rejects(() => E.resubmitCase(sql, cfg, c1, { by: 'x', reason: 'x' }), /부결·보류 상태에서만/)
+    await assert.rejects(() => E.resubmitCase(sql, cfg, c1, { by: 'x', reason: 'x' }), /상태에서만/)
     const r = await E.resubmitCase(sql, cfg, r0.caseId, { by: '마케팅', reason: '조건 수정 후 재상신' })
     assert.equal(r.statusAfter, 'pending_approval')
     const v = await E.getCaseView(sql, r0.caseId)

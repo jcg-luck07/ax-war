@@ -25,7 +25,7 @@ export const STATUS: Record<string, { label: string; color: ChipColor }> = {
   pending_approval: { label: '승인 대기', color: 'accent' },
   approved: { label: '승인됨', color: 'success' },
   rejected: { label: '부결', color: 'danger' },
-  on_hold: { label: '보류', color: 'warning' },
+  on_hold: { label: '재검토', color: 'warning' },
   closed: { label: '완료', color: 'default' },
 }
 export const statusOf = (s: string) => STATUS[s] ?? { label: s, color: 'default' as ChipColor }
@@ -79,7 +79,10 @@ export const EVENT_LABEL: Record<string, string> = {
   task_done: '작업 완료',
   facts_changed: '조건 변경',
   info_received: '확인 회신 도착',
-  resubmitted: '재상신',
+  resubmitted: '재보고',
+  rework_requested: '보완 요청',
+  file_removed: '첨부 삭제',
+  revision_reported: '수정 보고',
 }
 
 export const FACT_LABEL: Record<string, string> = {
