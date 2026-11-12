@@ -183,7 +183,7 @@ async function AcceptTab({
           ...(isNewRef ? [{ id: 'newref', label: '신규 ID 확인', value: `${sel.refId} · 이름 ${v.refName}${v.parentInfluencerId ? ` · 소속 ${v.parentInfluencerId} ${nameOf.get(v.parentInfluencerId) ?? ''}` : ''} (규칙 ${cat.idRule})`, hint: chk.newref }] : []),
           { id: 'deadline', label: '계약 체결 기한', value: `${v.contractDeadline} (${ddayText(dl)})`, hint: chk.deadline },
           { id: 'settle', label: '지급 예정일', value: <>{v.settlementDate}{inWin === null ? '' : inWin ? <span className="text-danger"> · 현금 하회 예상 구간 안 (승인권자가 올라가요)</span> : ' · 하회 구간 밖'}</>, hint: chk.settle },
-          ...(sel.category === 'influencer' ? [{ label: '계약 방식', value: `${v.feeType || '고정 피'}${v.fixedFee ? ` · 고정 피 ${fmtWon(Number(v.fixedFee))}` : ''}${v.performanceFee ? ` · 성과 피 ${fmtWon(Number(v.performanceFee))}` : ''}` }] : []),
+          ...(sel.category === 'influencer' ? [{ label: '계약 방식', value: `${v.feeType || '고정 피'}${v.fixedFee ? ` · 고정 피 ${fmtWon(Number(v.fixedFee))}` : ''}${v.performanceFee ? ` · 성과 피 ${fmtWon(Number(v.performanceFee))}${v.performanceRate ? ` (귀속 GMV의 ${v.performanceRate}%)` : ''}` : ''}` }] : []),
           { id: 'amount', label: '요청금액', value: fmtWon(contrib.marketingSpend), hint: chk.amount },
           ...(v.currentExpiry ? [{ label: '현 계약 만료일', value: v.currentExpiry }] : []),
           { id: 'memo', label: '메모', value: v.memo || '(메모 없음)', hint: chk.memo },

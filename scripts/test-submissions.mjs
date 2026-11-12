@@ -52,7 +52,7 @@ try {
       assert.equal(canSubmitCategory(user(['contract_mgr']), c.submitRoles, c.acceptRole), false)
       assert.equal(canAcceptCategory(user(['marketing_member']), c.acceptRole), false)
       assert.equal(canAcceptCategory(user(['marketing_team']), c.acceptRole), true)
-      assert.equal(canAcceptCategory(user(['masil_ceo']), c.acceptRole), true)
+      assert.equal(canAcceptCategory(user(['masil_ceo']), c.acceptRole), false, '다른 승인권자는 기안을 대신 접수하지 않는다')
     }
   })
   await t('제출: 필수 첨부·ID 형식·날짜·공헌이익 빈칸이 하나라도 문제면 거부한다', async () => {
@@ -233,6 +233,22 @@ try {
     await financeRefer(sql, cfg, r.caseId, { linked: false, by: '재무팀' })
     await contractRefer(sql, r.caseId, '계약 담당')
     await assert.rejects(() => removeCaseFile(sql, id2, '계약 담당'), /다음 단계로 넘어가서/)
+  })
+
+  await t('성과 피 비율: 선택 입력이고, 적으면 0 초과 100 이하여야 하며 계약 안건에 남는다', async () => {
+    const vals = { settlementDate: '2026-09-15', contractDeadline: '2026-08-25', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB, feeType: '혼합 피', fixedFee: '300000000', performanceFee: '50000000' }
+    const go = (over = {}) => submitIntake(sql, { category: 'influencer', refId: 'INF-006', values: { ...vals, ...over }, files: REQUIRED_FILES, by: '팀원' })
+    await assert.rejects(() => go({ performanceRate: '150' }), /0보다 크고 100 이하/)
+    await assert.rejects(() => go({ performanceRate: '0' }), /0보다 크고 100 이하/)
+    const noRate = await go(); assert.equal(noRate.input.performanceRate, '') // 비율은 몰라도 제출된다
+    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-007', values: { ...vals, performanceRate: '5' }, files: REQUIRED_FILES, by: '팀원' })
+    assert.equal(s.input.performanceRate, '5')
+    const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
+    const v = await E.getCaseView(sql, r.caseId)
+    assert.equal(v.case.payload.contract.performanceRate, 5); assert.equal(v.case.payload.contract.feeType, '혼합 피')
+    // 고정 피 방식이면 비율은 버려진다
+    const fixedOnly = await submitIntake(sql, { category: 'influencer', refId: 'INF-008', values: { ...vals, feeType: '고정 피', performanceFee: '', performanceRate: '5' }, files: REQUIRED_FILES, by: '팀원' })
+    assert.equal(fixedOnly.input.performanceRate, '')
   })
 
   console.log(`\n${n}개 시험 모두 통과`)

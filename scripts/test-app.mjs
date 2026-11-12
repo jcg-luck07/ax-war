@@ -21,10 +21,11 @@ const notice = { influencerId: 'INF-001', annualFixedFeeKrw: 2_800_000_000, noti
 
 try {
   // ───────── 권한 ─────────
-  await t('승인 권한: 요구 권한 이상인 역할만 결정할 수 있다 (낮은 역할·부서 역할·무역할 불가)', () => {
+  await t('승인 권한: 그 승인을 맡은 역할 본인만 결정할 수 있다 (다른 승인권자·부서 역할·무역할 불가)', () => {
     assert.equal(decidingRole(user(['masil_ceo']), 'ceo_board'), null)
     assert.equal(decidingRole(user(['masil_ceo']), 'masil_ceo'), 'masil_ceo')
-    assert.equal(decidingRole(user(['ceo_board']), 'marketing_team'), 'ceo_board', '높은 권한은 낮은 권한을 대신한다')
+    assert.equal(decidingRole(user(['ceo_board']), 'marketing_team'), null, '높은 권한도 다른 승인권자의 승인을 대신하지 않는다')
+    assert.equal(decidingRole(user(['ceo_board']), 'ceo_board'), 'ceo_board')
     assert.equal(decidingRole(user(['finance', 'contract_mgr']), 'marketing_team'), null, '부서 역할(rank 0)은 승인 불가')
     assert.equal(decidingRole(user([], { isAdmin: true }), 'marketing_team'), null, '관리자라도 승인 권한이 생기지 않는다')
   })

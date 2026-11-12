@@ -1,8 +1,10 @@
 // 수익성 검증(비교표)과 AI 판단(시험용 규칙)의 시험.  node --import ./scripts/_register.mjs scripts/test-profit.mjs
 // DB 를 쓰지 않는 순수 함수 시험이다.
 import assert from 'node:assert/strict'
-import { buildProfitability, aggregate, metricsOf } from '@/lib/modules/w02/profitability'
-import { mockJudge } from '@/lib/modules/w02/ai-judgment'
+import { buildProfitability, buildShareCompare, aggregate, metricsOf } from '@/lib/modules/w02/profitability'
+import { mockJudge, judge } from '@/lib/modules/w02/ai-judgment'
+import { buildJudgmentInput, distributionOf } from '@/lib/modules/w02/judgment-input'
+import { JUDGMENT_PROMPT } from '@/lib/modules/w02/ai-prompt'
 
 let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
@@ -60,7 +62,7 @@ try {
     const d = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001' })
     assert.equal(d.basis, '기존 실적'); assert.deepEqual(d.columns.map((c) => c.label.split(' (')[0]), ['이 인플루언서', '다른 인플루언서 평균', '최고', '최저'])
     assert.equal(d.rank.cp, 4); assert.equal(d.rank.n, 4); assert.equal(d.percentile, 0)
-    assert.match(d.columns[2].label, /토모카/); assert.match(d.columns[3].label, /유키/)
+    assert.match(d.columns[2].label, /토모카/); assert.match(d.columns[3].label, /유키/); assert.match(d.columns[2].sub, /공헌이익 기준/)
     assert.deepEqual(d.feeMix, { fixed: 2, perf: 1, mixed: 0 }) // 비교 대상(자기 제외): 고정 2 · 성과 1
     assert.equal(d.subjectFeeType, '고정+성과')
   })
@@ -74,13 +76,13 @@ try {
     assert.equal(d.columns.length, 4); assert.equal(d.rank.n, 5)
   })
 
-  await t('AI 판단: 3~4줄, "좋음/나쁨 n점"·"주의할 점" 머리말, 점수는 0~100 정수, 공헌이익·POAS·공헌이익률을 근거로 적는다', () => {
+  await t('AI 판단: 3~5줄, "좋음 n점"(0~100)·"나쁨 -n점"(0~-100)·"주의할 점" 머리말, 공헌이익·POAS·공헌이익률의 뜻을 풀어 근거로 적는다', () => {
     const d = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001' })
     const j = mockJudge(d, { fixedFeeKrw: 2_800_000_000, performanceRateUnknown: true })
-    assert.equal(j.status, 'ok'); assert.ok(j.lines.length >= 2 && j.lines.length <= 4)
+    assert.equal(j.status, 'ok'); assert.ok(j.lines.length >= 3 && j.lines.length <= 5)
     for (const l of j.lines) {
-      assert.match(l.label, /^(좋음 \d{1,3}점|나쁨 \d{1,3}점|주의할 점)$/)
-      const m = l.label.match(/(\d+)점/); if (m) assert.ok(Number(m[1]) >= 0 && Number(m[1]) <= 100)
+      assert.match(l.label, /^(좋음 \d{1,3}점|나쁨 -\d{1,3}점|주의할 점)$/)
+      const m = l.label.match(/(-?\d+)점/); if (m) assert.ok(Math.abs(Number(m[1])) <= 100 && (l.tone === 'bad' ? Number(m[1]) <= 0 : Number(m[1]) >= 0))
     }
     const first = j.lines[0].text
     assert.match(first, /실질 공헌이익/); assert.match(first, /POAS/); assert.match(first, /공헌이익률/)
@@ -106,8 +108,50 @@ try {
     const d = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-004' })
     const few = mockJudge({ ...d, feeMix: null, subjectFeeType: null }, {})
     const many = mockJudge(d, { fixedFeeKrw: 1_000_000_000, performanceRateUnknown: true })
-    const score = (j) => Number(j.lines[0].label.match(/(\d+)점/)[1])
+    const score = (j) => Math.abs(Number(j.lines[0].label.match(/(-?\d+)점/)[1]))
     assert.ok(score(many) <= score(few))
+  })
+
+  await t('AI 판단: 반품률은 비교 평균의 2배 이상일 때만 주의할 점으로 알린다', () => {
+    const d = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001' })
+    const hi = { ...d, columns: [{ ...d.columns[0], m: { ...d.columns[0].m, returnRate: 0.3 } }, ...d.columns.slice(1)], groups: d.groups.map((g) => ({ ...g, m: { ...g.m, returnRate: 0.1 } })) }
+    assert.ok(mockJudge(hi, {}).lines.some((l) => /반품률/.test(l.text)))
+    const lo = { ...hi, columns: [{ ...hi.columns[0], m: { ...hi.columns[0].m, returnRate: 0.12 } }, ...hi.columns.slice(1)] }
+    assert.ok(!mockJudge(lo, {}).lines.some((l) => /반품률/.test(l.text)))
+  })
+
+  await t('표의 지표별 순위: 대상을 비교 모집단에 끼워 넣어 지표마다 센다', () => {
+    const d = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001' })
+    assert.equal(d.ranks.n, 4); assert.equal(d.ranks.cp, 4); assert.equal(d.ranks.roas > 0, true)
+  })
+
+  await t('요청 비중 vs 집행 비중: 금액이 아니라 비중으로 비교하고, 요청 비중 상위가 실질 하위면 거꾸로 선 것으로 알린다', () => {
+    // 요청: 혜인(꼴찌 실적) 60%, 유키 20%, 초혜핏 10%, 토모카 10%
+    const requests = [{ influencerId: 'INF-001', amount: 60 }, { influencerId: 'INF-004', amount: 20 }, { influencerId: 'INF-002', amount: 10 }, { influencerId: 'INF-003', amount: 10 }]
+    const rich = { byInfluencer: perf.byInfluencer.map((x, i) => ({ ...x, spendShare: 0.25, rankByContribution: [4, 1, 2, 3][i] })), byCampaign: perf.byCampaign }
+    const sc = buildShareCompare({ requests, perf: rich, subjectInfluencerId: 'INF-001' })
+    assert.equal(sc.rows[0].influencerId, 'INF-001'); assert.ok(Math.abs(sc.rows[0].requestShare - 0.6) < 1e-9)
+    assert.ok(sc.invertedTop.includes('혜인')); assert.ok(sc.correlation < 0)
+    assert.equal(buildShareCompare({ requests: [], perf: rich, subjectInfluencerId: 'INF-001' }), null)
+    const j = mockJudge(buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001' }), { shares: sc })
+    assert.ok(j.lines.some((l) => /요청 비중/.test(l.text)))
+  })
+
+  await t('AI 입력: 화면에 쓴 계산값을 한 덩어리로 모은다 — 회사 전체 목록·분포·배분·계약 방식, 대상은 isSubject 로 표시', () => {
+    const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-2' })
+    const input = buildJudgmentInput({ profitability: d, perf, subject: { influencerId: 'INF-001', campaignId: 'CMP-2' }, allocation: null, fees: { feeType: '고정+성과', fixedFeeKrw: 100, hasPerfFee: true } })
+    assert.equal(input.company.campaigns.rows.length, 5); assert.equal(input.company.campaigns.rows.filter((r) => r.isSubject).length, 1)
+    assert.equal(input.company.campaigns.dist.contributionProfit.negative, 2); assert.equal(input.fees.performanceRateUnknown, true)
+    assert.ok(Array.isArray(JSON.parse(JSON.stringify(input)).company.influencers.rows)) // JSON 으로 그대로 보낼 수 있다
+    assert.equal(distributionOf([1, 2, 3, 4, 5]).median, 3); assert.equal(distributionOf([]), null)
+    assert.equal(judge(input).status, 'ok'); assert.match(JUDGMENT_PROMPT, /절대 수익성/)
+  })
+
+  await t('AI 판단: 손실인데 같은 인플루언서의 다른 캠페인보다 덜 나쁘다는 이유로 좋음 줄을 만들지 않는다', () => {
+    const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-2' })
+    const j = mockJudge(d, {})
+    assert.ok(!j.lines.some((l) => l.tone === 'good'))
+    assert.ok(!j.lines.some((l) => /같은 인플루언서의 다른 캠페인/.test(l.text)))
   })
 
   await t('자료 누락: 기존 실적도 제출 추계서도 없으면 AI 판단을 하지 않고 누락 사유를 돌려준다', () => {

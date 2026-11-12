@@ -255,6 +255,12 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                     <input className={INPUT} inputMode="numeric" placeholder="예: 300,000,000" value={formatMoneyInput(digitsOnly(vals.performanceFee ?? ''))} onChange={(e) => set('performanceFee')(digitsOnly(e.target.value))} />
                   </label>
                 )}
+                {needPerf && (
+                  <label className="flex flex-col gap-1 t-small">
+                    <span className="font-semibold">성과 피 비율 (귀속 GMV 대비 %, 선택)</span>
+                    <input className={INPUT} inputMode="decimal" placeholder="예: 5" maxLength={6} value={vals.performanceRate ?? ''} onChange={(e) => set('performanceRate')(e.target.value.replace(/[^0-9.]/g, ''))} />
+                  </label>
+                )}
                 {feeType && <div className="flex flex-col gap-1 t-small"><span className="font-semibold">요청금액 합계 <span className="t-caption">(자동)</span></span><div className={`${INPUT} bg-muted`}>{requestedStr ? fmtWon(Number(requestedStr)) : '금액을 입력하세요'}</div></div>}
               </>
             )}

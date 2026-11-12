@@ -2,8 +2,9 @@ import Link from 'next/link'
 import { Card } from '@heroui/react'
 import { Warning } from '@phosphor-icons/react/ssr'
 import { ProfitabilityCard } from '@/components/ProfitabilityCard'
-import { mockJudge } from '@/lib/modules/w02/ai-judgment'
-import { buildProfitability } from '@/lib/modules/w02/profitability'
+import { judge } from '@/lib/modules/w02/ai-judgment'
+import { buildJudgmentInput } from '@/lib/modules/w02/judgment-input'
+import { buildProfitability, buildShareCompare } from '@/lib/modules/w02/profitability'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
 import { Pill } from '@/components/bits'
@@ -77,6 +78,9 @@ function eventSummary(e: EventRow): string {
 }
 
 /** 안건 하나의 업무 흐름표·같이 봐야 할 점·다음 행동·요약·작업·이력. 안건 목록 화면의 아래쪽에서 쓴다. */
+/** 연관 안건 표의 줄 높이(px) — 표와 왼쪽 부결 표시 칸의 줄을 맞춘다 */
+const ROW_H = 34
+
 export async function CaseDetail({ caseId }: { caseId: number }) {
   const { sql, cfg, cash } = await getEngine()
   let view: CaseView
@@ -177,6 +181,14 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       ? { cp: subCalc.result.contributionProfit, netRevenue: subCalc.result.netRevenue, gmv: subCalc.inputs.gmv, spend: subCalc.inputs.marketingSpend, refund: subCalc.inputs.refund }
       : null,
   })
+  // 요청 비중(이번 기안의 인플루언서별 요청액) vs 지난 1년 집행 비중 — 캠페인 집행 안건에서만
+  const shares = c.caseType === EXPANSION_CASE_TYPE
+    ? buildShareCompare({
+        requests: (hasInfluencer ? allRows : await loadCaseRows(sql)).filter((r) => r.category === 'campaign' && r.influencerId && r.amount).map((r) => ({ influencerId: r.influencerId, amount: r.amount ?? 0 })),
+        perf,
+        subjectInfluencerId: String(c.subjectRefs.influencer ?? ''),
+      })
+    : null
   // 업무 발생 단계: 팀원이 올린 기록(접수 대기 테이블)이 있으면 보여 준다
   const subRef = (c.payload as { submission?: { id?: number } }).submission?.id
   // 팀원이 제출할 때 붙인 서류, 계약 담당이 올린 계약서
@@ -213,15 +225,24 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const masterFee = profData.subjectFeeType
   const hasPerfFee = feeKnown ? feeInfo?.feeType !== '고정 피' : Boolean(masterFee?.includes('성과'))
   // 빠진 자료 — 꼭 필요한 것만 짧게 알려 준다
-  const missingTerms = hasInfluencer && hasPerfFee && !feeKnown ? '성과 피 비율을 아직 몰라요 (마케팅에 확인 필요)' : null
+  const missingTerms = hasInfluencer && hasPerfFee && !(Number(feeInfo?.performanceRate ?? 0) > 0) ? '성과 피 비율을 아직 몰라요 (마케팅에 확인 필요)' : null
   const missingOldContract = oldContracts.length === 0 ? '기존 계약서 없음 (선택 항목)' : null
   const financeMissing = [missingTerms, missingOldContract].filter((x): x is string => Boolean(x))
   const contractMissing = financeMissing
-  // 재무팀: 계약 방식과 성과 피 비율만 (그 밖의 기한·조항 설명은 뺀다)
+  const infContractRow = relatedContracts[0]
+  // 재무팀: 계약 방식과 고정 피 금액·성과 피 금액·성과 피 비율 (그 밖의 기한·조항 설명은 뺀다)
+  const rateKnown = Number(feeInfo?.performanceRate ?? 0) > 0
+  const isContractCase = c.caseType !== EXPANSION_CASE_TYPE
+  const typeWord = isContractCase ? (feeInfo?.feeType ?? (contractAmount > 0 ? '고정 피' : '')) : (masterFee ? FEE_WORD[masterFee] ?? masterFee : '')
+  const needFixedLine = typeWord.includes('고정')
+  const needPerfLine = typeWord.includes('성과')
+  // 캠페인 안건은 같은 인플루언서의 전속계약 안건에서 금액을 가져온다
+  const feeSrc = isContractCase ? { fixed: feeInfo?.feeType ? feeInfo?.fixedFeeKrw ?? null : contractAmount || null, perf: feeInfo?.performanceFeeKrw ?? null } : { fixed: infContractRow?.amount ?? null, perf: null as number | null }
   const termsBody = lines([
-    c.caseType !== EXPANSION_CASE_TYPE
-      ? `계약 방식: ${feeText(feeInfo, contractAmount, ((c.payload as { revisions?: unknown[] }).revisions?.length ?? 0) > 0)}`
-      : masterFee ? `인플루언서 계약 방식: ${FEE_WORD[masterFee] ?? masterFee}` : '',
+    typeWord ? `${isContractCase ? '계약 방식' : '인플루언서 계약 방식'}: ${typeWord}` : '',
+    needFixedLine ? `고정 피: ${feeSrc.fixed ? `연 ${fmtWon(feeSrc.fixed)}${isContractCase ? '' : ' (전속계약 안건 기준)'}` : '금액을 아직 몰라요'}` : '',
+    needPerfLine ? `성과 피 금액: ${feeSrc.perf ? `연 예상 ${fmtWon(feeSrc.perf)}` : '아직 몰라요'}` : '',
+    needPerfLine ? `성과 피 비율: ${rateKnown ? `귀속 GMV의 ${feeInfo?.performanceRate}%` : '아직 몰라요'}` : '',
   ].filter(Boolean))
   // 계약 담당: 계약 방식·금액, 통보(확정) 기한, 만료일, 위약금만
   const penaltyLine = contractLines.join(' ').match(/갱신 후 중도 해지 시[^—,]*위약금/)?.[0]
@@ -265,19 +286,28 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     </div>
   )
   // 수익성 검증 대상 인플루언서·캠페인에 대한 AI 판단 (시험용 — 규칙으로 흉내). 계약 방식·고정 피 정보를 한계로 함께 판단한다
-  const infContractRow = relatedContracts[0]
-  const judgment = mockJudge(profData, {
-    fixedFeeKrw: c.caseType !== EXPANSION_CASE_TYPE ? (feeKnown ? feeInfo?.fixedFeeKrw ?? null : contractAmount || null) : (masterFee?.includes('고정') ? infContractRow?.amount ?? null : null),
-    performanceFeeKrw: feeKnown ? feeInfo?.performanceFeeKrw ?? null : null,
-    performanceRateUnknown: hasPerfFee,
+  // 화면에 쓴 계산값을 한 덩어리(judgmentInput)로 모아 AI 판단에 넘긴다 — AI API 를 연결해도 이 입력을 그대로 보내면 된다
+  const judgmentInput = buildJudgmentInput({
+    profitability: profData,
+    perf,
+    subject: { influencerId: String(c.subjectRefs.influencer ?? ''), campaignId: c.subjectRefs.campaign ? String(c.subjectRefs.campaign) : undefined },
+    allocation: shares,
+    fees: {
+      feeType: feeKnown ? feeInfo?.feeType ?? null : masterFee,
+      fixedFeeKrw: c.caseType !== EXPANSION_CASE_TYPE ? (feeKnown ? feeInfo?.fixedFeeKrw ?? null : contractAmount || null) : (masterFee?.includes('고정') ? infContractRow?.amount ?? null : null),
+      performanceFeeKrw: feeKnown ? feeInfo?.performanceFeeKrw ?? null : null,
+      performanceRate: feeInfo?.performanceRate ?? null,
+      hasPerfFee,
+    },
   })
+  const judgment = judge(judgmentInput)
   const decisionEvidence = (
     <div className="flex flex-col gap-3 border border-default p-2">
       <p className="t-small font-semibold">판단 근거</p>
       {revisionNote && <div className="flex flex-col gap-1"><p className="t-small font-semibold">수정 보고 (이 금액을 기준으로 판단해요)</p>{revisionNote}</div>}
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">수익성 검증</p>
-        <ProfitabilityCard data={profData} judgment={judgment} stepLabel={approverName} isApprover />
+        <ProfitabilityCard data={profData} judgment={judgment} stepLabel={approverName} isApprover shares={shares} />
       </div>
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">첨부 파일</p>
@@ -363,7 +393,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     ...revisionItem,
     { key: 'files', title: '첨부 파일', body: subFileLinks },
     ...(termsBody.props.children.length > 0 ? [{ key: 'terms', title: '계약 방식', body: termsBody }] : []),
-    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} judgment={judgment} stepLabel="재무팀" /> },
+    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} judgment={judgment} stepLabel="재무팀" shares={shares} /> },
   ]
   const contractItems: CheckItem[] = [
     ...revisionItem,
@@ -428,24 +458,61 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
                   key: g.key,
                   title: <>{g.label} — {influencerName} <span className="t-caption">(계약 체결 기한 {winFrom} ~ {winTo}, {g.rows.length}건)</span></>,
                   body: (
-                    <div className="flex max-h-60 flex-col overflow-y-auto">
-                      {!hasInfluencer && <p className="t-caption">연결된 인플루언서가 없어요.</p>}
-                      {hasInfluencer && g.rows.length === 0 && <p className="t-caption">없음</p>}
-                      {g.rows.map((r) => (
-                        <Link
-                          key={r.id}
-                          href={`/cases?id=${r.id}`}
-                          scroll={false}
-                          className={`grid grid-cols-1 gap-x-4 border-b border-default py-1 t-small sm:grid-cols-[8rem_minmax(0,1fr)_14rem_13rem_18rem_10rem] ${r.outcome === 'rejected' ? 'text-danger' : ''}`}
-                        >
-                          <span className="flex items-center gap-1">{r.outcome === 'rejected' && <Warning size={16} weight="fill" aria-label="부결된 안건" />}{r.code || '—'}</span>
-                          <span className="font-semibold">{r.title}</span>
-                          <span>{r.feeText ?? (r.amount === null ? '—' : fmtWon(r.amount))}</span>
-                          <span>{r.deadline ? `기한 ${r.deadline} (${ddayText(daysUntil(r.deadline, AS_OF))})` : '기한 없음'}</span>
-                          <span><strong>{r.decisionLabel}</strong> ({r.state})</span>
-                          <span>{r.authorityText ? `승인권자 ${r.authorityText}` : <span className="text-danger">승인권자 확정 필요</span>}</span>
-                        </Link>
-                      ))}
+                    <div>
+                      {!hasInfluencer && <p className="border border-default px-3 py-2 t-caption" style={{ borderRadius: 2 }}>연결된 인플루언서가 없어요.</p>}
+                      {hasInfluencer && g.rows.length === 0 && <p className="border border-default px-3 py-2 t-caption" style={{ borderRadius: 2 }}>없음</p>}
+                      {hasInfluencer && g.rows.length > 0 && (
+                        // 위쪽 기안·안건 목록과 같은 모양: 네모난 테두리, 세로줄로 나뉜 칸, 고정된 제목 줄, 길면 안쪽 스크롤
+                        // 부결 표시(빨간 느낌표)는 표 밖 왼쪽 여백에 두어 글자를 가리지 않게 한다
+                        <div className="max-h-60 overflow-auto">
+                         <div className="flex items-start">
+                          <div className="sticky left-0 z-20 shrink-0 bg-content" style={{ width: 22, paddingTop: ROW_H + 1 }} aria-hidden={false}>
+                            {g.rows.map((r) => (
+                              <div key={r.id} className="flex items-center justify-center text-danger" style={{ height: ROW_H }}>
+                                {r.outcome === 'rejected' && <Warning size={16} weight="fill" aria-label="부결된 안건" />}
+                              </div>
+                            ))}
+                          </div>
+                          <div className="border border-default" style={{ borderRadius: 2, marginTop: 0 }}>
+                          <table className="border-collapse t-small" style={{ tableLayout: 'fixed', width: 1180 }}>
+                            <colgroup>
+                              {[100, 250, 190, 180, 270, 190].map((w, i) => <col key={i} style={{ width: w }} />)}
+                            </colgroup>
+                            <thead className="sticky top-0 z-10 bg-surface">
+                              <tr>
+                                {['분류코드', '안건', '금액·계약 방식', '계약 체결 기한', '상태', '승인권자'].map((h) => (
+                                  <th key={h} className="border-b border-r border-default px-3 text-left font-semibold whitespace-nowrap" style={{ height: ROW_H }}>{h}</th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {g.rows.map((r) => {
+                                const cells = [
+                                  r.code || '—',
+                                  r.title,
+                                  r.feeText ?? (r.amount === null ? '—' : fmtWon(r.amount)),
+                                  r.deadline ? `${r.deadline} (${ddayText(daysUntil(r.deadline, AS_OF))})` : '—',
+                                  `${r.decisionLabel} (${r.state})`,
+                                  r.authorityText ?? '확정 필요',
+                                ]
+                                return (
+                                  <tr key={r.id} style={{ height: ROW_H }} className={`border-b border-default align-top hover:bg-surface ${r.outcome === 'rejected' ? 'text-danger' : ''}`}>
+                                    {cells.map((txt, i) => (
+                                      <td key={i} className={`border-r border-default p-0 ${i === 1 ? 'font-semibold' : ''}`}>
+                                        <Link href={`/cases?id=${r.id}`} scroll={false} className="flex items-center gap-1 px-3" style={{ height: ROW_H - 1 }} title={txt}>
+                                          <span className="min-w-0 truncate whitespace-nowrap">{txt}</span>
+                                        </Link>
+                                      </td>
+                                    ))}
+                                  </tr>
+                                )
+                              })}
+                            </tbody>
+                          </table>
+                          </div>
+                         </div>
+                        </div>
+                      )}
                     </div>
                   ),
                 })),

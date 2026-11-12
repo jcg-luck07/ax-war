@@ -38,6 +38,8 @@ export interface ProfitabilityData {
   /** 대상이 비교 모집단(인플루언서 전체 / 전체 캠페인)에서 어디쯤인가 — 1 이 가장 좋음, 0 이 가장 나쁨. 모르면 null */
   percentile: number | null
   rank: { cp: number; n: number } | null
+  /** 표의 각 지표별 순위(1 = 가장 좋음) — 표에 있는 지표만. 대상을 비교 모집단에 끼워 넣어 센다 */
+  ranks: { cp: number; cpRate: number | null; poas: number | null; roas: number | null; n: number } | null
   spendShare: { share: number; rank: number; n: number } | null
   /** 이 인플루언서(캠페인이면 소속 인플루언서)의 보수 구조: 고정 / 성과 / 고정+성과 */
   subjectFeeType: string | null
@@ -104,6 +106,83 @@ function percentileOf(value: number, population: number[]): { rank: number; n: n
   return { rank, n: all.length, pct: all.length > 1 ? (all.length - rank) / (all.length - 1) : null }
 }
 
+/** 대상(m)을 다른 대상들(others)에 끼워 넣었을 때 지표별 순위 — 값이 클수록 좋은 지표라 큰 쪽이 1위 */
+function ranksOf(m: MetricSet, others: PerfLine[]): NonNullable<ProfitabilityData['ranks']> {
+  const ms = others.map(metricsOf)
+  const rk = (v: number | null, f: (x: MetricSet) => number | null) => {
+    if (v === null) return null
+    return 1 + ms.filter((o) => { const w = f(o); return w !== null && w > v }).length
+  }
+  return { cp: rk(m.cp, (x) => x.cp) ?? 1, cpRate: rk(m.cpRate, (x) => x.cpRate), poas: rk(m.poas, (x) => x.poas), roas: rk(m.roas, (x) => x.roas), n: others.length + 1 }
+}
+
+// ───────── 요청 비중 vs 기존 집행 비중 (금액이 아니라 비중으로 비교)
+//  · 요청 비중: 이번 기안의 인플루언서별 요청액 ÷ 전체 요청액 (예산 계획 자료와 기안 제출값은 같은 값으로 본다)
+//  · 집행 비중: 지난 1년 인플루언서별 광고비 ÷ 전체 광고비 (mkt_ad_spend_ms)
+export interface ShareRow {
+  influencerId: string
+  name: string
+  /** 요청 비중 0~1 (이번 기안에 요청이 없으면 0) */
+  requestShare: number
+  /** 요청 비중 순위 (1 = 가장 큼, 요청이 있는 인플루언서끼리) */
+  requestRank: number
+  /** 실질 공헌이익 (원) */
+  cpAmount: number | null
+  /** 기존 집행 비중 0~1 */
+  spendShare: number
+  /** 실질 공헌이익 순위 (1 = 가장 좋음), 실적이 없으면 null */
+  cpRank: number | null
+}
+export interface ShareCompare {
+  rows: ShareRow[]
+  /** 전체 인플루언서 수 (실질 공헌이익 순위의 모집단) */
+  total: number
+  /** 화면에 먼저 보여 줄 인플루언서: 이 안건의 인플루언서 · 요청 비중 상위 4명 · 요청은 상위인데 성과는 하위인 인플루언서 */
+  keyIds: string[]
+  /** 요청 비중 상위 3명 중 실질 공헌이익이 하위 절반인 사람 수 */
+  topWeak: { top: number; weak: number }
+  subjectId: string
+  n: number
+  /** 요청 비중 상위 1/3 중 실질 공헌이익 하위 1/3에 있는 인플루언서 이름 */
+  invertedTop: string[]
+  /** 요청 비중 순위와 실질 공헌이익 순위의 방향이 같은가 (스피어만 순위상관, -1~1). 비교 대상이 3명 미만이면 null */
+  correlation: number | null
+}
+
+export function buildShareCompare(args: {
+  requests: { influencerId: string; amount: number }[]
+  perf: PerformanceResult | null
+  subjectInfluencerId: string
+}): ShareCompare | null {
+  const inf = args.perf?.byInfluencer ?? []
+  const total = args.requests.reduce((s, r) => s + r.amount, 0)
+  if (inf.length === 0 || total <= 0) return null
+  const req = new Map<string, number>()
+  for (const r of args.requests) req.set(r.influencerId, (req.get(r.influencerId) ?? 0) + r.amount)
+  const rows: ShareRow[] = inf
+    .map((i) => ({ influencerId: i.influencerId, name: i.influencerName, requestShare: (req.get(i.influencerId) ?? 0) / total, requestRank: 0, cpAmount: i.contributionProfit, spendShare: i.spendShare, cpRank: i.rankByContribution }))
+    .filter((r) => r.requestShare > 0 || r.influencerId === args.subjectInfluencerId)
+    .sort((a, b) => b.requestShare - a.requestShare)
+  const n = rows.length
+  rows.forEach((r, i) => { r.requestRank = i + 1 })
+  // 요청 비중 순위 vs 실질 공헌이익 순위 (요청이 있는 인플루언서끼리)
+  const reqRank = new Map(rows.map((r, i) => [r.influencerId, i + 1]))
+  const cpSorted = [...rows].sort((a, b) => (a.cpRank ?? 99) - (b.cpRank ?? 99))
+  const cpRankIn = new Map(cpSorted.map((r, i) => [r.influencerId, i + 1]))
+  const third = Math.ceil(n / 3)
+  const invertedTop = rows.filter((r) => (reqRank.get(r.influencerId) ?? 99) <= third && (cpRankIn.get(r.influencerId) ?? 0) > n - third).map((r) => r.name)
+  let correlation: number | null = null
+  if (n >= 3) {
+    const d2 = rows.reduce((s, r) => s + ((reqRank.get(r.influencerId) ?? 0) - (cpRankIn.get(r.influencerId) ?? 0)) ** 2, 0)
+    correlation = 1 - (6 * d2) / (n * (n * n - 1))
+  }
+  const half = Math.floor(inf.length / 2)
+  const top3 = rows.slice(0, 3)
+  const topWeak = { top: top3.length, weak: top3.filter((r) => (r.cpRank ?? 0) > inf.length - half).length }
+  const keyIds = rows.filter((r, i) => i < 4 || r.influencerId === args.subjectInfluencerId || invertedTop.includes(r.name)).map((r) => r.influencerId)
+  return { rows, total: inf.length, keyIds, topWeak, subjectId: args.subjectInfluencerId, n, invertedTop, correlation }
+}
+
 export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const perf = a.perf
   const feeOf = new Map(a.influencers.map((i) => [i.id, i.feeType]))
@@ -111,7 +190,7 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const feeKind = (t: string | null | undefined) => (!t ? null : t.includes('+') ? 'mixed' : t === '고정' ? 'fixed' : t === '성과' ? 'perf' : null)
   const subjectFeeType = feeOf.get(a.influencerId) ?? null
   const base: ProfitabilityData = {
-    kind: a.kind, subjectName: '', basis: null, columns: [], groups: [], percentile: null, rank: null, spendShare: null,
+    kind: a.kind, subjectName: '', basis: null, columns: [], groups: [], percentile: null, rank: null, ranks: null, spendShare: null,
     subjectFeeType, feeMix: null, missing: [],
   }
 
@@ -134,13 +213,14 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
       base.groups.push({ key: 'others', label: '다른 인플루언서 평균', short: '다른 인플루언서', n: others.length, m: avg })
       const best = sorted[0], worst = sorted[sorted.length - 1]
       if (others.length >= 3) {
-        base.columns.push({ label: `최고 (${best.influencerName})`, m: metricsOf(best) })
-        base.columns.push({ label: `최저 (${worst.influencerName})`, m: metricsOf(worst) })
+        base.columns.push({ label: `최고 (${best.influencerName})`, sub: '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(best) })
+        base.columns.push({ label: `최저 (${worst.influencerName})`, sub: '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(worst) })
       }
     }
     const p = percentileOf(line.contributionProfit, others.map((x) => x.contributionProfit))
     base.rank = { cp: p.rank, n: p.n }
     base.percentile = p.pct
+    base.ranks = ranksOf(m, others)
     if (inf) {
       const totalSpend = (perf?.byInfluencer ?? []).reduce((s, x) => s + x.adSpend, 0)
       const bySpend = [...(perf?.byInfluencer ?? [])].sort((x, y) => y.adSpend - x.adSpend)
@@ -181,5 +261,6 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const p = percentileOf(used.contributionProfit, all.map((x) => x.contributionProfit))
   base.rank = { cp: p.rank, n: p.n }
   base.percentile = p.pct
+  base.ranks = ranksOf(metricsOf(used), all)
   return base
 }

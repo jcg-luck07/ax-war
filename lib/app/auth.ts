@@ -77,15 +77,12 @@ export async function currentUser(sqlArg?: Sql): Promise<AppUser> {
 
 const roleById = (id: string) => ROLES.find((r) => r.id === id)
 
-/** 이 사람이 요구 권한(requiredRoleId)의 승인을 할 수 있는가. 가능하면 결정에 쓸 역할을 돌려준다(가장 낮은 충분한 역할). */
+/** 이 사람이 요구 권한(requiredRoleId)의 승인을 할 수 있는가. 가능하면 결정에 쓸 역할을 돌려준다(그 승인을 맡은 역할 본인만). */
 export function decidingRole(user: AppUser, requiredRoleId: string): string | null {
   const need = roleById(requiredRoleId)?.rank
-  if (need === undefined) return null
-  const ok = user.roles
-    .map((id) => roleById(id)!)
-    .filter((r) => r && r.rank >= need && r.rank > 0)
-    .sort((a, b) => a.rank - b.rank)
-  return ok[0]?.id ?? null
+  if (need === undefined || need <= 0) return null
+  // 승인은 그 승인을 맡은 역할 본인만 한다 (높은 권한이 낮은 권한의 승인을 대신하지 않는다)
+  return user.roles.includes(requiredRoleId) ? requiredRoleId : null
 }
 
 /** 작업의 담당(assignee 이름)을 이 사람이 처리할 수 있는가 */

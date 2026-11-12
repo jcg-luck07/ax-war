@@ -239,6 +239,10 @@ export async function submitIntake(
     v.feeType = feeType
     v.fixedFee = need.fixed ? fixed : ''
     v.performanceFee = need.performance ? perf : ''
+    // 성과 피 비율(귀속 GMV 대비 %) — 선택. 적으면 0 초과 100 이하의 숫자여야 한다
+    const rate = (input.values.performanceRate ?? '').replace(/,/g, '').trim()
+    if (rate && need.performance && !(Number(rate) > 0 && Number(rate) <= 100)) throw new EngineError('성과 피 비율은 0보다 크고 100 이하인 숫자(%)로 입력해 주세요')
+    v.performanceRate = need.performance ? rate : ''
     const total = (need.fixed ? Number(fixed || 0) : 0) + (need.performance ? Number(perf || 0) : 0)
     v.requested = total > 0 ? String(total) : ''
   }
@@ -362,7 +366,7 @@ export async function acceptSubmission(
   if (s.category === 'influencer') {
     res = await receiveContractNotice(sql, cfg, {
       influencerId: s.refId, annualFixedFeeKrw: Math.round(Number(v.requested)), notifyDeadline: v.contractDeadline,
-      feeType: v.feeType || undefined, fixedFeeKrw: v.fixedFee ? Number(v.fixedFee) : undefined, performanceFeeKrw: v.performanceFee ? Number(v.performanceFee) : undefined,
+      feeType: v.feeType || undefined, fixedFeeKrw: v.fixedFee ? Number(v.fixedFee) : undefined, performanceFeeKrw: v.performanceFee ? Number(v.performanceFee) : undefined, performanceRate: v.performanceRate ? Number(v.performanceRate) : undefined,
       currentExpiry: v.currentExpiry || null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
       newInfluencerName: v.isNewRef === '1' ? v.refName : undefined,
     }, by)

@@ -59,6 +59,8 @@ export interface ContractNoticeInput {
   feeType?: string
   fixedFeeKrw?: number
   performanceFeeKrw?: number
+  /** 성과 피 비율 (귀속 GMV 대비 %) — 모르면 비워 둔다 */
+  performanceRate?: number
   notifyDeadline: string
   /** 신규 인플루언서(첫 계약)는 현 계약이 없어 null */
   currentExpiry: string | null
@@ -97,7 +99,7 @@ export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: 
       },
       contract: {
         currentExpiry: input.currentExpiry, notifyDeadline: input.notifyDeadline, note: input.note,
-        ...(input.feeType ? { feeType: input.feeType, fixedFeeKrw: input.fixedFeeKrw ?? null, performanceFeeKrw: input.performanceFeeKrw ?? null } : {}),
+        ...(input.feeType ? { feeType: input.feeType, fixedFeeKrw: input.fixedFeeKrw ?? null, performanceFeeKrw: input.performanceFeeKrw ?? null, performanceRate: input.performanceRate ?? null } : {}),
       },
     },
     dataOrigin: '사용자입력',

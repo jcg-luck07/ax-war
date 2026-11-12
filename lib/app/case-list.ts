@@ -49,14 +49,15 @@ export interface CaseRow {
 type Facts = Record<string, unknown>
 
 /** 전속계약의 계약 방식 (안건 제출 때 입력) */
-export interface FeeInfo { feeType?: string; fixedFeeKrw?: number; performanceFeeKrw?: number }
+export interface FeeInfo { feeType?: string; fixedFeeKrw?: number; performanceFeeKrw?: number; /** 성과 피 비율(귀속 GMV 대비 %) */ performanceRate?: number | null }
 const won = (n: number) => `${Math.round(n).toLocaleString('ko-KR')}원`
 export function feeText(info: FeeInfo | undefined, amount: number, revised = false): string {
   if (revised && info?.feeType) return `${info.feeType} 연 ${won(amount)} (수정 보고 반영)`
   if (!info?.feeType) return amount > 0 ? `고정 피 연 ${won(amount)}` : '계약 방식 미입력'
   if (info.feeType === '고정 피') return `고정 피 연 ${won(info.fixedFeeKrw ?? amount)}`
-  if (info.feeType === '성과 피') return `성과 피 연 ${won(info.performanceFeeKrw ?? amount)}`
-  return `혼합 피 — 고정 피 연 ${won(info.fixedFeeKrw ?? 0)} + 성과 피 연 ${won(info.performanceFeeKrw ?? 0)}`
+  const rate = info.performanceRate ? ` (귀속 GMV의 ${info.performanceRate}%)` : ''
+  if (info.feeType === '성과 피') return `성과 피 연 ${won(info.performanceFeeKrw ?? amount)}${rate}`
+  return `혼합 피 — 고정 피 연 ${won(info.fixedFeeKrw ?? 0)} + 성과 피 연 ${won(info.performanceFeeKrw ?? 0)}${rate}`
 }
 
 /** 제목에서 분류코드·요청액·내부 번호(SYN-/PLAN-/SUB-)를 덜어 낸다. 예: "혜인(INF-001) 연간 전속계약 갱신 — 고정 피 연 28억 원" → "혜인 연간 전속계약 갱신" */

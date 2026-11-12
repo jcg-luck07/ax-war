@@ -145,9 +145,15 @@ export function FlowDiagram({ def, state, laneLabels, counts, uid, myLanes }: Pr
               {s === 'current' && !counts && (
                 <>
                   {/* 지금 여기: 노드 둘레에 굵은 고리 + 위에 진한 칩을 달아 한눈에 보이게 한다 */}
-                  <div className="pointer-events-none absolute animate-pulse border-4 border-primary" style={{ left: left - 6, top: top - 6, width: sz.w + 12, height: sz.h + 12, borderRadius: n.kind === 'task' ? 16 : 999 }} aria-hidden="true" />
-                  <div className="absolute flex justify-center" style={{ left: left - 6, top: top - 30, width: sz.w + 12 }}>
-                    <span className="rounded-full bg-primary px-3 py-0.5 text-caption-01 font-semibold text-primary-fg">▼ 지금 여기</span>
+                  {n.kind === 'gateway' ? (
+                    // 마름모 노드는 고리도 같은 마름모 모양(정사각형을 45도 돌린 것)으로
+                    <div className="pointer-events-none absolute rotate-45 animate-pulse border-4 border-primary rounded-input" style={{ left, top, width: sz.w, height: sz.h }} aria-hidden="true" />
+                  ) : (
+                    <div className="pointer-events-none absolute animate-pulse border-4 border-primary" style={{ left: left - 6, top: top - 6, width: sz.w + 12, height: sz.h + 12, borderRadius: n.kind === 'task' ? 16 : 999 }} aria-hidden="true" />
+                  )}
+                  {/* 칩은 노드보다 넓게 잡아 한 줄로 보이게 (줄바꿈 금지) */}
+                  <div className="absolute flex justify-center" style={{ left: c.x - 60, top: top - (n.kind === 'gateway' ? 38 : 30), width: 120 }}>
+                    <span className="whitespace-nowrap rounded-full bg-primary px-3 py-0.5 text-caption-01 font-semibold text-primary-fg">▼ 지금 여기</span>
                   </div>
                 </>
               )}

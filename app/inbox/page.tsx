@@ -6,10 +6,9 @@ import { PageHeader } from '@/components/ax'
 import { Pill } from '@/components/bits'
 import { BulkReplyForm, type AnswerFieldView } from '@/components/case-actions'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
-import { canHandle, currentUser, decidingRole, roleLabels } from '@/lib/app/auth'
+import { canHandle, currentUser, roleLabels } from '@/lib/app/auth'
 import { ddayText } from '@/lib/app/format'
 import { CATEGORIES, listSubmissions } from '@/lib/modules/intake/submissions'
-import { canAcceptCategory } from '@/lib/app/auth'
 import { daysUntil, listOpenTasks, listPendingApprovals } from '@/lib/engine/engine'
 
 export const dynamic = 'force-dynamic'
@@ -41,15 +40,24 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const user = await currentUser(sql)
   const [approvals, tasks, subs] = await Promise.all([listPendingApprovals(sql), listOpenTasks(sql, 500), listSubmissions(sql, 'pending').catch(() => [])])
 
-  const myApprovals = approvals.filter((a) => decidingRole(user, a.requiredRole) !== null)
-  const otherApprovals = approvals.filter((a) => decidingRole(user, a.requiredRole) === null)
-  const mine = tasks.filter((t) => canHandle(user, t.assigneeRole))
+  // 할 일은 "내 역할의 소관이고, 지금 내 차례인 것"만 보여 준다.
+  //  · 승인은 그 승인을 맡은 역할 본인에게만 (높은 권한이 낮은 권한의 승인을 대신할 수는 있지만, 남의 할 일로 띄우지 않는다)
+  //  · 승인 전에 끝나야 하는 앞 단계(재무 취합·계약 확인 등)가 열려 있으면 아직 결정할 차례가 아니다
+  //  · 앞 작업이 끝나야 하는 작업(detail.after)도 아직 내 차례가 아니다
+  const openByCase = new Map<number, typeof tasks>()
+  for (const t of tasks) openByCase.set(t.caseId, [...(openByCase.get(t.caseId) ?? []), t])
+  const gateTasksOf = (caseId: number) => (openByCase.get(caseId) ?? []).filter((t) => t.detail.gate === 'pre-approval')
+  const isMyApproval = (requiredRole: string) => user.authenticated && user.roles.includes(requiredRole)
+  const myApprovals = approvals.filter((a) => isMyApproval(a.requiredRole) && gateTasksOf(a.caseId).length === 0)
+  const approvalsWaiting = approvals.filter((a) => !myApprovals.includes(a))
+  const myTurn = (t: (typeof tasks)[number]) => !(t.detail.after && (openByCase.get(t.caseId) ?? []).some((x) => String(x.detail.key) === String(t.detail.after)))
+  const mine = tasks.filter((t) => canHandle(user, t.assigneeRole) && myTurn(t))
   const myInfo = mine.filter((t) => t.taskType === 'info_request')
 
   const mk = (key: string, caseId: number | null, caseTitle: string, kind: TodoItem['kind'], title: string, deadline: string | null, href?: string): TodoItem => ({
     key, caseId, href: href ?? `/cases?id=${caseId}`, caseTitle, kind, title, deadline, days: deadline ? daysUntil(deadline, AS_OF) : null,
   })
-  const toAccept = subs.filter((s) => canAcceptCategory(user, CATEGORIES.find((c) => c.id === s.category)!.acceptRole))
+  const toAccept = subs.filter((s) => user.authenticated && user.roles.includes(CATEGORIES.find((c) => c.id === s.category)!.acceptRole))
   const all: TodoItem[] = [
     ...toAccept.map((s) => mk(`s${s.id}`, null, s.title, '접수', '접수 필요 — 보고자 ' + s.submittedBy, s.input.contractDeadline || null, '/intake')),
     ...myApprovals.map((a) => mk(`a${a.id}`, a.caseId, a.caseTitle, '승인', `${roleLabel(a.requiredRole)} 승인 결정`, a.deadline)),
@@ -164,18 +172,23 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
           </Card.Content>
         </Card>
 
-        {otherApprovals.length > 0 && (
+        {approvalsWaiting.length > 0 && (
           <Card>
             <Card.Header>
-              <Card.Title>다른 사람의 결정을 기다리는 승인 ({otherApprovals.length}건)</Card.Title>
-              <Card.Description>내 역할로는 결정할 수 없는 건이에요. 누구의 결정이 필요한지만 보여요.</Card.Description>
+              <Card.Title>아직 내가 결정할 차례가 아닌 승인 ({approvalsWaiting.length}건)</Card.Title>
+              <Card.Description>다른 역할의 결정을 기다리거나, 앞 단계(재무팀·계약 담당 등)가 끝나야 결정할 수 있는 건이에요.</Card.Description>
             </Card.Header>
             <Card.Content className="flex flex-col gap-2">
-              {otherApprovals.slice(0, 12).map((a) => (
-                <Link key={a.id} href={`/cases?id=${a.caseId}`} className="t-caption">
-                  • {a.caseTitle} — {roleLabel(a.requiredRole)}
-                </Link>
-              ))}
+              {approvalsWaiting.slice(0, 12).map((a) => {
+                const gate = gateTasksOf(a.caseId)
+                const gateWho = [...new Set(gate.map((t) => t.assigneeRole).filter(Boolean))].join('·')
+                return (
+                  <Link key={a.id} href={`/cases?id=${a.caseId}`} className="t-caption">
+                    • {a.caseTitle} — {roleLabel(a.requiredRole)} 승인{gate.length > 0 ? ` (앞 단계 진행 중: ${gateWho || '확인 필요'})` : ''}
+                  </Link>
+                )
+              })}
+              {approvalsWaiting.length > 12 && <p className="t-caption">외 {approvalsWaiting.length - 12}건은 안건 목록에서 볼 수 있어요.</p>}
             </Card.Content>
           </Card>
         )}

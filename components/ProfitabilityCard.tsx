@@ -1,25 +1,27 @@
 import { Pill } from '@/components/bits'
 import { fmtWon } from '@/lib/app/format'
 import type { Judgment } from '@/lib/modules/w02/ai-judgment'
-import type { MetricSet, ProfitabilityData } from '@/lib/modules/w02/profitability'
+import type { MetricSet, ProfitabilityData, ShareCompare } from '@/lib/modules/w02/profitability'
 
 // 수익성 검증 — 판단자가 의사결정을 쉽게 내리도록: ① 지표 비교표(공헌이익 줄은 색을 달리해 강조) ② AI 판단.
 // AI 판단은 아직 AI API 를 연결하지 않아서 규칙으로 흉내 낸 시험용 결과다.
 const pct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(1)}%`)
 const times = (v: number | null) => (v === null ? '—' : `${v.toFixed(2)}배`)
 
-const ROWS: { key: keyof MetricSet; label: string; fmt: (m: MetricSet) => string; strong?: boolean }[] = [
-  { key: 'cp', label: '실질 공헌이익', fmt: (m) => fmtWon(m.cp), strong: true },
-  { key: 'cpRate', label: '공헌이익률 (공헌이익 ÷ 순매출)', fmt: (m) => pct(m.cpRate) },
-  { key: 'poas', label: '실질 ROAS = POAS (공헌이익 ÷ 광고비)', fmt: (m) => times(m.poas) },
-  { key: 'roas', label: '명목 ROAS (GMV ÷ 광고비)', fmt: (m) => times(m.roas) },
-  { key: 'returnRate', label: '반품률', fmt: (m) => pct(m.returnRate) },
+const ROWS: { key: keyof MetricSet; label: string; fmt: (m: MetricSet) => string; strong?: boolean; rankKey?: 'cp' | 'cpRate' | 'poas' | 'roas' }[] = [
+  { key: 'cp', label: '실질 공헌이익', fmt: (m) => fmtWon(m.cp), strong: true, rankKey: 'cp' },
+  { key: 'cpRate', label: '공헌이익률 (공헌이익 ÷ 순매출)', fmt: (m) => pct(m.cpRate), rankKey: 'cpRate' },
+  { key: 'poas', label: '실질 ROAS = POAS (공헌이익 ÷ 광고비)', fmt: (m) => times(m.poas), rankKey: 'poas' },
+  { key: 'roas', label: '명목 ROAS (GMV ÷ 광고비)', fmt: (m) => times(m.roas), rankKey: 'roas' },
 ]
+
+/** 문장 끝(. ! ? 뒤 공백)에서 나눈다 — 소수점(0.45배)은 뒤에 공백이 없어 나뉘지 않는다 */
+const sentences = (t: string) => t.split(/(?<=[.!?])\s+/).filter(Boolean)
 
 const TONE: Record<string, 'success' | 'danger' | 'warning'> = { good: 'success', bad: 'danger', caution: 'warning' }
 
 export function ProfitabilityCard({
-  data, judgment, stepLabel, isApprover = false,
+  data, judgment, stepLabel, isApprover = false, shares = null,
 }: {
   data: ProfitabilityData
   judgment: Judgment
@@ -27,6 +29,8 @@ export function ProfitabilityCard({
   stepLabel: string
   /** 승인권자 화면이면 '보완요청하기' 대신 '재검토'로 돌려보내라고 안내한다 */
   isApprover?: boolean
+  /** 요청 비중 vs 기존 집행 비중 (캠페인 집행 안건) */
+  shares?: ShareCompare | null
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -67,35 +71,99 @@ export function ProfitabilityCard({
                       {r.label}
                       {r.strong && <span className="block t-caption font-normal">※ 이 줄만 보면 부정확해요 — 연 고정 피·성과 피가 빠져 있어요. 아래 비율 지표도 함께 보세요.</span>}
                     </td>
-                    {data.columns.map((c) => (
-                      <td key={c.label} className="border border-default px-2 py-1 text-right">{c.m ? r.fmt(c.m) : '—'}</td>
-                    ))}
+                    {data.columns.map((c, ci) => {
+                      const rk = ci === 0 && r.rankKey && data.ranks ? data.ranks[r.rankKey] : null
+                      return (
+                        <td key={c.label} className="border border-default px-2 py-1 text-right">
+                          {c.m ? r.fmt(c.m) : '—'}
+                          {rk !== null && <span className="block t-small font-normal">{data.ranks?.n}{data.kind === 'influencer' ? '명' : '개'} 중 {rk}위</span>}
+                        </td>
+                      )
+                    })}
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          {(data.rank || data.spendShare) && (
-            <p className="t-caption">
-              {data.rank ? `실질 공헌이익 순위 ${data.rank.n}${data.kind === 'influencer' ? '명' : '개'} 중 ${data.rank.cp}위` : ''}
-              {data.rank && data.spendShare ? ' · ' : ''}
-              {data.spendShare ? `광고비 집행 비중 ${(data.spendShare.share * 100).toFixed(1)}% (${data.spendShare.n}명 중 ${data.spendShare.rank}위)` : ''}
-            </p>
-          )}
         </>
       )}
 
+      {shares && shares.rows.length > 0 && <ShareTable shares={shares} />}
+
       {judgment.status === 'ok' && (
-        <div className="flex flex-col gap-2 border border-default p-2">
+        <div className="flex flex-col gap-3 border border-default p-3" style={{ borderRadius: 2 }}>
           <p className="t-small font-semibold">AI 판단 <span className="t-caption font-normal">(시험용 — 아직 AI API를 연결하지 않아 규칙으로 흉내 낸 결과예요)</span></p>
           {judgment.lines.map((l, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <span className="shrink-0"><Pill color={TONE[l.tone]}>{l.label}</Pill></span>
-              <span className="t-small">{l.text}</span>
+            <div key={i} className="flex flex-col gap-1 border-t border-default pt-3 first:border-t-0 first:pt-0">
+              <span className="self-start"><Pill color={TONE[l.tone]}>{l.label}</Pill></span>
+              {/* 문장마다 줄을 바꾸고, 글씨 크기는 다른 일반 글자(t-small)와 같게 */}
+              <div className="t-small flex flex-col gap-1">
+                {sentences(l.text).map((sn, k) => <p key={k}>{sn}</p>)}
+              </div>
             </div>
           ))}
         </div>
       )}
+    </div>
+  )
+}
+
+const pc = (v: number) => `${(v * 100).toFixed(1)}%`
+
+/** 이 기안의 인플루언서별 요청 비중과 지난 1년 집행 비중을 나란히 — 작년보다 비중이 얼마나 변했는지, 비중 순위가 실질 공헌이익 순위와 이어지는지(배분이 성과를 따라가는지) */
+function ShareTable({ shares }: { shares: ShareCompare }) {
+  const dir = shares.correlation === null ? null : shares.correlation <= -0.2 ? 'bad' : shares.correlation >= 0.2 ? 'good' : 'flat'
+  const mineRows = shares.rows.filter((r) => r.influencerId === shares.subjectId)
+  const Row = ({ r }: { r: ShareCompare['rows'][number] }) => {
+    const mine = r.influencerId === shares.subjectId
+    const diff = r.requestShare - r.spendShare
+    return (
+      <tr className={mine ? 'bg-primary-soft font-semibold' : ''}>
+        <td className="border border-default px-2 py-1">{r.name}{mine ? ' (이 안건)' : ''}</td>
+        <td className="border border-default px-2 py-1 text-right">{pc(r.requestShare)}</td>
+        <td className="border border-default px-2 py-1 text-right">{pc(r.spendShare)}</td>
+        <td className="border border-default px-2 py-1 text-right">{diff >= 0 ? '+' : '−'}{pc(Math.abs(diff))}p</td>
+        <td className="border border-default px-2 py-1 text-right">{r.requestRank}위</td>
+        <td className="border border-default px-2 py-1 text-right">{r.cpRank === null ? '—' : `${r.cpRank}위`}</td>
+      </tr>
+    )
+  }
+  const head = (
+    <thead className="bg-surface">
+      <tr>
+        {['인플루언서', '이번 기안 요청 비중', '지난 1년 집행 비중', '차이', '요청 비중 순위', '실질 공헌이익 순위'].map((h, i) => (
+          <th key={h} className={`border border-default px-2 py-1 font-semibold ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>
+        ))}
+      </tr>
+    </thead>
+  )
+  return (
+    <div className="flex flex-col gap-2 border border-default p-2" style={{ borderRadius: 2 }}>
+      <p className="t-small font-semibold">요청 비중 vs 기존 집행 비중 <span className="t-caption font-normal">(금액이 아니라 비중)</span></p>
+      {dir && (
+        <p className="t-small">
+          {dir === 'bad' && <>요청 비중이 큰 인플루언서일수록 실질 공헌이익은 오히려 낮아요 (순위 상관 {shares.correlation?.toFixed(2)}). 지난 1년과 같은 원칙으로 배분했다면 이 문제는 이 기안만이 아니라 연간 예산 전체에서 반복돼요.</>}
+          {dir === 'good' && <>요청 비중이 큰 인플루언서일수록 실질 공헌이익도 높아요 (순위 상관 {shares.correlation?.toFixed(2)}). 배분이 성과를 따라가고 있어요.</>}
+          {dir === 'flat' && <>요청 비중과 실질 공헌이익 순위 사이에 뚜렷한 방향이 없어요 (순위 상관 {shares.correlation?.toFixed(2)}).</>}
+          {shares.invertedTop.length > 0 && <> 요청 비중은 상위인데 실질 공헌이익은 하위인 인플루언서: <strong>{shares.invertedTop.join(', ')}</strong>.</>}
+        </p>
+      )}
+      {/* 맨 위에는 이번 안건의 대상 1명만, 전체 보기를 누르면 대상을 포함한 모두 */}
+      <div className="overflow-x-auto">
+        <table className="w-full border-collapse t-small" style={{ minWidth: 520 }}>
+          {head}
+          <tbody>{mineRows.map((r) => <Row key={r.influencerId} r={r} />)}</tbody>
+        </table>
+      </div>
+      <details>
+        <summary className="cursor-pointer t-small underline">전체 {shares.rows.length}명 보기</summary>
+        <div className="mt-2 overflow-x-auto">
+          <table className="w-full border-collapse t-small" style={{ minWidth: 520 }}>
+            {head}
+            <tbody>{shares.rows.map((r) => <Row key={r.influencerId} r={r} />)}</tbody>
+          </table>
+        </div>
+      </details>
     </div>
   )
 }
