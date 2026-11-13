@@ -4,6 +4,7 @@ import type { Sql } from 'postgres'
 import { assignDrafts } from '@/lib/app/drafts'
 import { EngineError, openCase, type EngineConfig } from '@/lib/engine/engine'
 import { fmtWon } from '@/lib/app/format'
+import { DEAL_TYPES, campaignNumber, nextCampaignName, uniqueTitle } from '@/lib/app/submission-title'
 import { calcContribution, validateContribution, CONTRIBUTION_FIELDS, type ContributionInput } from '@/lib/metrics/contribution-calc'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
@@ -181,11 +182,15 @@ export function missingRequired(category: string, v: Record<string, string>, fil
   const isNew = v.isNewRef === '1'
   const out: string[] = []
   if (isNew) {
-    if (!(v.refName ?? '').trim()) out.push(`신규 ${cat.refLabel.replace(' ID', '')} 이름`)
+    // 신규 인플루언서만 이름을 적는다 (신규 캠페인의 이름은 소속 인플루언서·제품 종류·번호로 자동 생성)
+    if (cat.id === 'influencer' && !(v.refName ?? '').trim()) out.push('신규 인플루언서 이름')
     if (cat.id === 'campaign' && !(v.parentInfluencerId ?? '').trim()) out.push('소속 인플루언서')
   }
+  // 제품 종류: 신규 캠페인은 직접 고른다 (기존 캠페인은 원본 마스터에 있다)
+  if (cat.id === 'campaign' && isNew && v.productLine !== undefined && !v.productLine.trim()) out.push('제품 종류')
   for (const f of cat.fields) {
-    if (f.name === 'currentExpiry' && isNew) continue
+    // 신규 계약(새 인플루언서이거나 구분이 "신규")은 아직 현 계약이 없다
+    if (f.name === 'currentExpiry' && (isNew || v.dealType === '신규')) continue
     if (f.required && !(v[f.name] ?? '').trim()) out.push(f.label)
   }
   if (cat.id === 'influencer') {
@@ -212,10 +217,14 @@ export async function submitIntake(
   if (!cat.idPattern.test(refId)) throw new EngineError(`${cat.refLabel} 형식이 맞지 않아요 (${cat.idRule})`)
 
   const isNew = input.values.isNewRef === '1'
-  const v: Record<string, string> = {}
+  // 구분: 캠페인은 신규/확대, 인플루언서 전속계약은 신규/갱신. 보내지 않으면 ID 로 짐작한다 (새 ID → 신규, 기존 ID → 갱신/확대)
+  const deal = (input.values.dealType ?? '').trim() || (isNew ? '신규' : cat.id === 'influencer' ? '갱신' : '확대')
+  if (!DEAL_TYPES[cat.id].includes(deal)) throw new EngineError(`구분은 ${DEAL_TYPES[cat.id].join(' / ')} 중에서 골라 주세요`)
+  if (isNew && deal !== '신규') throw new EngineError('새로 만드는 ID 는 "신규"로만 올릴 수 있어요')
+  const v: Record<string, string> = { dealType: deal }
   for (const f of cat.fields) {
-    // 신규 인플루언서는 아직 계약이 없어 현 계약 만료일이 없다
-    if (f.name === 'currentExpiry' && isNew) { v.currentExpiry = ''; continue }
+    // 신규 계약은 아직 계약이 없어 현 계약 만료일이 없다
+    if (f.name === 'currentExpiry' && (isNew || deal === '신규')) { v.currentExpiry = ''; continue }
     const val = (input.values[f.name] ?? '').trim().replace(f.type === 'number' ? /,/g : /^$/, '')
     if (f.required && !val && !inc) throw new EngineError(`${f.label} 을(를) 입력해 주세요`)
     if (val && f.type === 'date' && !isDate(val)) throw new EngineError(`${f.label} 은(는) YYYY-MM-DD 형식으로 입력해 주세요`)
@@ -279,9 +288,12 @@ export async function submitIntake(
   const campaigns = await entityRows(sql, MASIL_MODEL, 'campaign')
   let name = refId
   if (isNew) {
-    const refName = (input.values.refName ?? '').trim()
-    if (!refName && !inc) throw new EngineError(`신규 ${cat.refLabel} 의 이름을 입력해 주세요`)
-    if (refName.length > 40) throw new EngineError('이름은 40자 이내로 입력해 주세요')
+    // 신규 인플루언서만 이름을 적는다. 신규 캠페인의 이름은 아래에서 자동으로 만든다 ("인플루언서 제품종류 캠페인N")
+    const refName = cat.id === 'influencer' ? (input.values.refName ?? '').trim() : ''
+    if (cat.id === 'influencer') {
+      if (!refName && !inc) throw new EngineError('신규 인플루언서의 이름을 입력해 주세요')
+      if (refName.length > 40) throw new EngineError('이름은 40자 이내로 입력해 주세요')
+    }
     const exists = cat.id === 'influencer' ? influencers.some((i) => i.influencer_id === refId) : campaigns.some((c) => c.campaign_id === refId)
     if (exists) throw new EngineError(`이미 있는 분류ID입니다! (${refId}) 목록에서 골라 주세요`)
     const clash = await sql`SELECT 1 FROM submissions WHERE category = ${cat.id} AND ref_id = ${refId} AND input->>'isNewRef' = '1' AND status <> 'returned' LIMIT 1`
@@ -291,8 +303,23 @@ export async function submitIntake(
       const parent = (input.values.parentInfluencerId ?? '').trim().toUpperCase()
       if (!(inc && parent === '') && parent !== 'NONE' && !influencers.some((i) => i.influencer_id === parent)) throw new EngineError('소속 인플루언서 ID 를 목록에서 고르거나 해당 없음(NONE)을 골라 주세요')
       v.parentInfluencerId = parent
+      const lines = [...new Set(campaigns.map((c) => String(c.product_line)))]
+      const pl = (input.values.productLine ?? '').trim()
+      if (!pl && !inc) throw new EngineError('제품 종류(색조·기초 등)를 골라 주세요')
+      if (pl && !lines.includes(pl)) throw new EngineError(`제품 종류는 ${lines.join(' · ')} 중에서 골라 주세요`)
+      v.productLine = pl
+      // 캠페인 이름 자동 생성: 그 인플루언서의 다음 번호 (원본 이름 방식 — 혜인 색조 캠페인1, 혜인 색조 캠페인2, 혜인 기초 캠페인3 …)
+      const parentName = parent && parent !== 'NONE' ? String(influencers.find((i) => i.influencer_id === parent)?.influencer_name ?? '') : ''
+      const sameParent = (id: unknown) => (parent === 'NONE' ? !id || id === 'NONE' : id === parent)
+      const pending = await sql`SELECT input FROM submissions WHERE category = 'campaign' AND input->>'isNewRef' = '1' AND status <> 'returned'`
+      const maxN = Math.max(
+        0,
+        ...campaigns.filter((c) => sameParent(c.influencer_id)).map((c) => campaignNumber(String(c.campaign_name))),
+        ...pending.filter((r: any) => sameParent(r.input?.parentInfluencerId)).map((r: any) => campaignNumber(String(r.input?.refName ?? ''))),
+      )
+      v.refName = nextCampaignName(parentName, pl, maxN)
     }
-    name = refName ? `${refName}(${refId})` : refId
+    name = cat.id === 'campaign' ? v.refName : refName ? `${refName}(${refId})` : refId
   } else if (cat.id === 'influencer') {
     const infl = influencers.find((i) => i.influencer_id === refId)
     if (!infl) throw new EngineError(`인플루언서 ${refId} 를 찾을 수 없어요 (새로 등록하려면 "신규 ID 입력"을 고르세요)`)
@@ -300,14 +327,20 @@ export async function submitIntake(
   } else {
     const c = campaigns.find((x) => x.campaign_id === refId)
     if (!c) throw new EngineError(`캠페인 ${refId} 를 찾을 수 없어요 (새로 등록하려면 "신규 ID 입력"을 고르세요)`)
-    name = `${c.campaign_name}(${refId})`
+    name = String(c.campaign_name)
+    v.productLine = String(c.product_line) // 기존 캠페인의 제품 종류는 원본 마스터 값
   }
   const amountText = v.requested ? `${Number(v.requested).toLocaleString('ko-KR')}원` : '금액 미입력'
   if (inc) {
     const miss = missingRequired(cat.id, v, input.files.map((f) => f.kind))
     if (miss.length > 0) v.incomplete = '1'
   }
-  const title = cat.id === 'influencer' ? `${name} ${isNew ? '신규 전속계약 체결' : '전속계약 갱신'} — ${v.feeType || '고정 피'} 연 ${amountText}${isNew ? ' [신규 ID]' : ''}` : `${name} 집행 — ${amountText}${isNew ? ' [신규 ID]' : ''}`
+  // 제목은 자동으로 만든다 (제출 화면의 미리보기와 같은 규칙). 이미 있는 제목과 겹치면 구분 뒤에 번호를 올린다 (확대2, 확대3 …).
+  const existingTitles = [
+    ...(await sql`SELECT title FROM submissions`).map((r: any) => String(r.title)),
+    ...(await sql`SELECT title FROM decision_cases`).map((r: any) => String(r.title)),
+  ]
+  const title = uniqueTitle({ category: cat.id, name, deal, feeType: v.feeType, amountText }, existingTitles)
 
   return (await sql.begin(async (tx) => {
     const t = tx as unknown as Sql
@@ -370,6 +403,8 @@ export async function acceptSubmission(
       currentExpiry: v.currentExpiry || null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
       newInfluencerName: v.isNewRef === '1' ? v.refName : undefined,
     }, by)
+    // 새 방식으로 제출된 건은 제출 때 자동 생성한 제목을 안건 제목으로 쓴다
+    if (v.dealType) await sql`UPDATE decision_cases SET title = ${s.title} WHERE id = ${res.caseId}`
   } else {
     const camp = (await entityRows(sql, MASIL_MODEL, 'campaign')).find((c) => c.campaign_id === s.refId)
     const campName = camp ? String(camp.campaign_name) : v.isNewRef === '1' ? v.refName : s.refId
@@ -377,7 +412,9 @@ export async function acceptSubmission(
     const amount = Math.round(Number(v.requested))
     res = await openCase(sql, cfg, {
       caseType: EXPANSION_CASE_TYPE,
-      title: `SUB-${s.id} ${campName} 집행 — 요청 ${fmtWon(amount)}${v.isNewRef === '1' ? ' [신규 ID]' : ''}`,
+      title: v.dealType
+        ? `SUB-${s.id} ${s.title}` // 제출 때 자동 생성한 제목 (예: SUB-12 혜인 기초 캠페인3 확대 — 요청 15,000,000원)
+        : `SUB-${s.id} ${campName} 집행 — 요청 ${fmtWon(amount)}${v.isNewRef === '1' ? ' [신규 ID]' : ''}`,
       deadline: v.contractDeadline,
       subjectRefs: { plan: `SUB-${s.id}`, campaign: s.refId, influencer: parentInfl },
       payload: {

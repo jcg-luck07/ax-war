@@ -1,10 +1,10 @@
-import { Pill } from '@/components/bits'
+import { AiJudgmentPanel } from '@/components/AiJudgmentPanel'
 import { fmtWon } from '@/lib/app/format'
-import type { Judgment } from '@/lib/modules/w02/ai-judgment'
+import type { JudgmentInput } from '@/lib/modules/w02/judgment-input'
 import type { MetricSet, ProfitabilityData, ShareCompare } from '@/lib/modules/w02/profitability'
 
 // 수익성 검증 — 판단자가 의사결정을 쉽게 내리도록: ① 지표 비교표(공헌이익 줄은 색을 달리해 강조) ② AI 판단.
-// AI 판단은 아직 AI API 를 연결하지 않아서 규칙으로 흉내 낸 시험용 결과다.
+// AI 판단은 버튼을 눌렀을 때 Claude API 에 물어서 보여 준다.
 const pct = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(1)}%`)
 const times = (v: number | null) => (v === null ? '—' : `${v.toFixed(2)}배`)
 
@@ -15,22 +15,18 @@ const ROWS: { key: keyof MetricSet; label: string; fmt: (m: MetricSet) => string
   { key: 'roas', label: '명목 ROAS (GMV ÷ 광고비)', fmt: (m) => times(m.roas), rankKey: 'roas' },
 ]
 
-/** 문장 끝(. ! ? 뒤 공백)에서 나눈다 — 소수점(0.45배)은 뒤에 공백이 없어 나뉘지 않는다 */
-const sentences = (t: string) => t.split(/(?<=[.!?])\s+/).filter(Boolean)
-
-const TONE: Record<string, 'success' | 'danger' | 'warning'> = { good: 'success', bad: 'danger', caution: 'warning' }
-
 export function ProfitabilityCard({
-  data, judgment, stepLabel, isApprover = false, shares = null,
+  data, stepLabel, isApprover = false, shares = null, judgmentInput = null,
 }: {
   data: ProfitabilityData
-  judgment: Judgment
   /** 지금 진행 단계를 맡은 부서 이름 (예: 재무팀) */
   stepLabel: string
   /** 승인권자 화면이면 '보완요청하기' 대신 '재검토'로 돌려보내라고 안내한다 */
   isApprover?: boolean
   /** 요청 비중 vs 기존 집행 비중 (캠페인 집행 안건) */
   shares?: ShareCompare | null
+  /** Claude 에게 보낼 입력 — 버튼을 누르면 이것으로 묻는다 */
+  judgmentInput?: JudgmentInput | null
 }) {
   return (
     <div className="flex flex-col gap-3">
@@ -90,20 +86,7 @@ export function ProfitabilityCard({
 
       {shares && shares.rows.length > 0 && <ShareTable shares={shares} />}
 
-      {judgment.status === 'ok' && (
-        <div className="flex flex-col gap-3 border border-default p-3" style={{ borderRadius: 2 }}>
-          <p className="t-small font-semibold">AI 판단 <span className="t-caption font-normal">(시험용 — 아직 AI API를 연결하지 않아 규칙으로 흉내 낸 결과예요)</span></p>
-          {judgment.lines.map((l, i) => (
-            <div key={i} className="flex flex-col gap-1 border-t border-default pt-3 first:border-t-0 first:pt-0">
-              <span className="self-start"><Pill color={TONE[l.tone]}>{l.label}</Pill></span>
-              {/* 문장마다 줄을 바꾸고, 글씨 크기는 다른 일반 글자(t-small)와 같게 */}
-              <div className="t-small flex flex-col gap-1">
-                {sentences(l.text).map((sn, k) => <p key={k}>{sn}</p>)}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
+      {data.missing.length === 0 && judgmentInput && <AiJudgmentPanel input={judgmentInput} />}
     </div>
   )
 }

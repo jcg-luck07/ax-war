@@ -2,7 +2,6 @@ import Link from 'next/link'
 import { Card } from '@heroui/react'
 import { Warning } from '@phosphor-icons/react/ssr'
 import { ProfitabilityCard } from '@/components/ProfitabilityCard'
-import { judge } from '@/lib/modules/w02/ai-judgment'
 import { buildJudgmentInput } from '@/lib/modules/w02/judgment-input'
 import { buildProfitability, buildShareCompare } from '@/lib/modules/w02/profitability'
 import { MASIL_MODEL } from '@/lib/semantic/model'
@@ -164,7 +163,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   // 회부·승인 때 띄울 경고: 연관 안건에 부결이 있는가
   const warning = relatedWarning({ category: CASE_TYPE_CATEGORY[c.caseType] ?? null, influencerId: String(c.subjectRefs.influencer ?? ''), id: c.id }, allRows, String(influencerName))
 
-  // 수익성 검증: 이 안건의 대상(인플루언서/캠페인)을 비교 대상과 나란히 놓고, AI 판단(시험용)을 붙인다
+  // 수익성 검증: 이 안건의 대상(인플루언서/캠페인)을 비교 대상과 나란히 놓고, AI 판단은 버튼을 눌렀을 때 Claude 에게 묻는다
   const subCalc = (c.payload as { submission?: { calc?: { inputs?: { gmv: number; refund: number; marketingSpend: number }; result: { netRevenue: number; contributionProfit: number } } } }).submission?.calc
   const [campRows, infRows] = await Promise.all([
     entityRows(sql, MASIL_MODEL, 'campaign').catch(() => []),
@@ -182,9 +181,14 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       : null,
   })
   // 요청 비중(이번 기안의 인플루언서별 요청액) vs 지난 1년 집행 비중 — 캠페인 집행 안건에서만
+  const rowsForShares = c.caseType === EXPANSION_CASE_TYPE ? (hasInfluencer ? allRows : await loadCaseRows(sql)) : []
+  const myDraftId = rowsForShares.find((r) => r.id === c.id)?.draftId ?? null
   const shares = c.caseType === EXPANSION_CASE_TYPE
     ? buildShareCompare({
-        requests: (hasInfluencer ? allRows : await loadCaseRows(sql)).filter((r) => r.category === 'campaign' && r.influencerId && r.amount).map((r) => ({ influencerId: r.influencerId, amount: r.amount ?? 0 })),
+        // 이 안건이 들어 있는 기안의 캠페인 안건만 — 다른 기안의 안건은 비교에 넣지 않는다
+        requests: rowsForShares
+          .filter((r) => r.category === 'campaign' && r.influencerId && r.amount && r.draftId === myDraftId)
+          .map((r) => ({ influencerId: r.influencerId, amount: r.amount ?? 0 })),
         perf,
         subjectInfluencerId: String(c.subjectRefs.influencer ?? ''),
       })
@@ -285,7 +289,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       {subFiles.length === 0 && caseFiles.length === 0 && <p className="t-caption">{subRef ? '첨부된 파일이 없어요.' : '원본 기안 파일에서 가져온 안건이라 첨부 파일이 없어요.'}</p>}
     </div>
   )
-  // 수익성 검증 대상 인플루언서·캠페인에 대한 AI 판단 (시험용 — 규칙으로 흉내). 계약 방식·고정 피 정보를 한계로 함께 판단한다
+  // 수익성 검증 대상 인플루언서·캠페인에 대한 AI 판단 입력. 계약 방식·고정 피 정보를 한계로 함께 판단한다
   // 화면에 쓴 계산값을 한 덩어리(judgmentInput)로 모아 AI 판단에 넘긴다 — AI API 를 연결해도 이 입력을 그대로 보내면 된다
   const judgmentInput = buildJudgmentInput({
     profitability: profData,
@@ -300,14 +304,13 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       hasPerfFee,
     },
   })
-  const judgment = judge(judgmentInput)
   const decisionEvidence = (
     <div className="flex flex-col gap-3 border border-default p-2">
       <p className="t-small font-semibold">판단 근거</p>
       {revisionNote && <div className="flex flex-col gap-1"><p className="t-small font-semibold">수정 보고 (이 금액을 기준으로 판단해요)</p>{revisionNote}</div>}
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">수익성 검증</p>
-        <ProfitabilityCard data={profData} judgment={judgment} stepLabel={approverName} isApprover shares={shares} />
+        <ProfitabilityCard data={profData} stepLabel={approverName} isApprover shares={shares} judgmentInput={judgmentInput} />
       </div>
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">첨부 파일</p>
@@ -393,7 +396,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     ...revisionItem,
     { key: 'files', title: '첨부 파일', body: subFileLinks },
     ...(termsBody.props.children.length > 0 ? [{ key: 'terms', title: '계약 방식', body: termsBody }] : []),
-    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} judgment={judgment} stepLabel="재무팀" shares={shares} /> },
+    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} stepLabel="재무팀" shares={shares} judgmentInput={judgmentInput} /> },
   ]
   const contractItems: CheckItem[] = [
     ...revisionItem,
@@ -496,12 +499,12 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
                                   r.authorityText ?? '확정 필요',
                                 ]
                                 return (
-                                  <tr key={r.id} style={{ height: ROW_H }} className={`border-b border-default align-top hover:bg-surface ${r.outcome === 'rejected' ? 'text-danger' : ''}`}>
+                                  <tr key={r.id} style={{ height: ROW_H }} className={`border-b border-default align-top ${r.outcome === 'rejected' ? 'text-danger' : ''}`}>
                                     {cells.map((txt, i) => (
                                       <td key={i} className={`border-r border-default p-0 ${i === 1 ? 'font-semibold' : ''}`}>
-                                        <Link href={`/cases?id=${r.id}`} scroll={false} className="flex items-center gap-1 px-3" style={{ height: ROW_H - 1 }} title={txt}>
+                                        <div className="flex items-center gap-1 px-3" style={{ height: ROW_H - 1 }} title={txt}>
                                           <span className="min-w-0 truncate whitespace-nowrap">{txt}</span>
-                                        </Link>
+                                        </div>
                                       </td>
                                     ))}
                                   </tr>

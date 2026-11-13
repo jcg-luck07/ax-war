@@ -121,7 +121,7 @@ try {
     await assert.rejects(() => go(inf(), 'INF-1'), /형식/)
     await assert.rejects(() => go(inf(), 'INF-001'), /이미 있는 분류ID입니다/)
     const s = await go(inf())
-    assert.match(s.title, /새별\(INF-011\).*\[신규 ID\]/)
+    assert.match(s.title, /새별\(INF-011\) 연간 전속계약 신규 — 고정 피 연 300,000,000원/)
     await assert.rejects(() => go(inf({ refName: '다른이름' })), /이미 있는 분류ID입니다/)
     assert.ok(checksFor('influencer', true).some((c) => c.id === 'newref')); assert.ok(!checksFor('influencer', false).some((c) => c.id === 'newref'))
     const need = await allChecks(s.id, 'influencer', true)
@@ -134,13 +134,47 @@ try {
     assert.equal(v.case.payload.submission.newRef.name, '새별'); assert.equal(v.case.authority, 'masil_ceo', '3억(10억 이하)·지급일 구간 밖 → Masil 대표')
   })
   await t('신규 캠페인 ID: 소속 인플루언서(기존 또는 NONE)가 필요하고, 안건에 소속이 남는다', async () => {
-    const base = { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새 캠페인' }
+    const base = { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새 캠페인', productLine: '색조' }
     const go = (values) => submitIntake(sql, { category: 'campaign', refId: 'CMP-0026', values, files: REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-999' }), /소속 인플루언서/)
+    await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-002', productLine: '' }), /제품 종류/)
+    await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-002', productLine: '가구' }), /제품 종류는/)
     const s = await go({ ...base, parentInfluencerId: 'INF-002' })
     const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'campaign', true))
     const v = await E.getCaseView(sql, r.caseId)
-    assert.equal(v.case.subjectRefs.campaign, 'CMP-0026'); assert.equal(v.case.subjectRefs.influencer, 'INF-002'); assert.match(v.case.title, /새 캠페인/)
+    assert.equal(v.case.subjectRefs.campaign, 'CMP-0026'); assert.equal(v.case.subjectRefs.influencer, 'INF-002'); assert.match(v.case.title, /SUB-\d+ 초혜핏 색조 캠페인4 신규 — 요청/); assert.equal(v.case.payload.submission.newRef.name, '초혜핏 색조 캠페인4')
+  })
+  await t('제목 자동 생성(원본 이름 방식): 캠페인은 "이름 확대|신규", 전속계약은 "이름(ID) 연간 전속계약 신규|갱신"이고, 겹치면 확대2·확대3 처럼 번호가 올라간다', async () => {
+    const a = await submit({ refId: 'CMP-0007', values: campaignValues({ dealType: '확대' }) })
+    assert.equal(a.title, '토모카 기초 캠페인1 확대 — 요청 15,000,000원'); assert.equal(a.input.productLine, '기초')
+    const b = await submit({ refId: 'CMP-0007', values: campaignValues({ dealType: '확대' }) })
+    assert.equal(b.title, '토모카 기초 캠페인1 확대2 — 요청 15,000,000원')
+    const c = await submit({ refId: 'CMP-0007', values: campaignValues({ dealType: '확대', requested: '9000000' }) }) // 금액이 달라도 목록에 보이는 제목이 같으면 번호를 올린다
+    assert.equal(c.title, '토모카 기초 캠페인1 확대3 — 요청 9,000,000원')
+    const d = await submit({ refId: 'CMP-0007', values: campaignValues({ dealType: '신규' }) })
+    assert.equal(d.title, '토모카 기초 캠페인1 신규 — 요청 15,000,000원')
+    await assert.rejects(() => submit({ refId: 'CMP-0007', values: campaignValues({ dealType: '갱신' }) }), /구분은/)
+    await assert.rejects(() => submit({ refId: 'CMP-0099', values: campaignValues({ dealType: '확대', isNewRef: '1', parentInfluencerId: 'NONE', productLine: '색조' }) }), /신규"로만/)
+    // 새 캠페인: 이름 칸 없이 "인플루언서 제품종류 캠페인N"(N = 그 인플루언서의 다음 번호). 이미 제출된 새 캠페인도 번호에 센다.
+    const nv = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', parentInfluencerId: 'INF-001', productLine: '색조', ...over })
+    const n1 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0027', values: nv({ refName: '무시됨' }), files: REQUIRED_FILES, by: '팀원' })
+    assert.equal(n1.input.refName, '혜인 색조 캠페인4'); assert.equal(n1.title, '혜인 색조 캠페인4 신규 — 요청 5,000,000원')
+    const n2 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0028', values: nv({ productLine: '기초' }), files: REQUIRED_FILES, by: '팀원' })
+    assert.equal(n2.input.refName, '혜인 기초 캠페인5'); assert.equal(n2.title, '혜인 기초 캠페인5 신규 — 요청 5,000,000원')
+    // 전속계약: 구분 "신규"는 현 계약 만료일 없이도 올릴 수 있고, "갱신"은 만료일이 필요하다
+    const base = { settlementDate: '2026-09-15', contractDeadline: '2026-07-26', feeType: '고정 피', fixedFee: '800000000', memo: '시험', ...CONTRIB }
+    const e = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '신규' }, files: INF_FILES, by: '팀원' })
+    assert.equal(e.title, '토모카(INF-003) 연간 전속계약 신규 — 고정 피 연 800,000,000원'); assert.equal(e.input.currentExpiry, '')
+    await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신' }, files: INF_FILES, by: '팀원' }), /현 계약 만료일/)
+    const f = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30' }, files: INF_FILES, by: '팀원' })
+    assert.match(f.title, /토모카\(INF-003\) 연간 전속계약 갱신\d* — 고정 피 연 800,000,000원/)
+    const g = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30' }, files: INF_FILES, by: '팀원' })
+    assert.notEqual(g.title, f.title); assert.match(g.title, /갱신\d+ — /)
+    // 접수하면 안건 제목도 이 제목을 쓴다 (캠페인은 앞에 SUB-번호)
+    const r = await acceptSubmission(sql, cfg, f.id, '팀장', await allChecks(f.id, 'influencer'))
+    assert.equal((await E.getCaseView(sql, r.caseId)).case.title, f.title)
+    const r2 = await acceptSubmission(sql, cfg, a.id, '팀장', await allChecks(a.id, 'campaign'))
+    assert.equal((await E.getCaseView(sql, r2.caseId)).case.title, `SUB-${a.id} ${a.title}`)
   })
   await t('첨부 종류: 기안서·추계서는 필수, 계약서는 선택이고, 그 밖에는 종류 이름을 직접 적어 여러 개 추가할 수 있다', async () => {
     assert.deepEqual(ATTACHMENT_KINDS.filter((k) => k.required).map((k) => k.id), ['draft', 'estimate'])

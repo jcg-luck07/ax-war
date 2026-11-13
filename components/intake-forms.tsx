@@ -8,6 +8,7 @@ import { digitsOnly, formatDateInput, formatMoneyInput } from '@/lib/app/date-in
 import { fmtWon } from '@/lib/app/format'
 import { Button, toast } from '@heroui/react'
 import { acceptSubmissionAction, returnSubmissionAction } from '@/app/actions'
+import { DEAL_LABEL, DEAL_TYPES, nextCampaignName, uniqueTitle } from '@/lib/app/submission-title'
 import { useConfirm } from '@/components/ax'
 import { CONTRIBUTION_FIELDS, CONTRIBUTION_FORMULA, calcContribution, validateContribution } from '@/lib/metrics/contribution-calc'
 
@@ -20,7 +21,7 @@ export interface CategoryView {
   /** 접수 권한자 이름 (예: 마케팅 팀장) */
   acceptLabel: string
   fields: { name: string; label: string; type: 'text' | 'number' | 'date'; required?: boolean; placeholder?: string }[]
-  options: { id: string; label: string }[]
+  options: { id: string; label: string; name: string; product?: string }[]
   /** 신규 ID 로 넣을 때 제안하는 다음 번호 (예: INF-011) */
   nextId: string
   /** 신규 ID 앞부분 (예: INF-) — 분류를 고르면 자동으로 적히고, 사용자는 뒤의 숫자만 쓴다 */
@@ -29,7 +30,13 @@ export interface CategoryView {
   /** 이미 쓰고 있는 분류 ID (원본 + 다른 신규 제출) — 신규로 같은 ID 를 넣으면 경고한다 */
   takenIds: string[]
   /** 캠페인의 소속 인플루언서 선택지 (신규 캠페인일 때) */
-  parents: { id: string; label: string }[]
+  parents: { id: string; label: string; name: string }[]
+  /** 소속 인플루언서별 가장 큰 캠페인 번호 — 새 캠페인 이름은 그다음 번호 */
+  campaignSeq: Record<string, number>
+  /** 이미 있는 제목 (제출된 안건 + 안건) — 자동 제목이 겹치지 않게 번호를 붙인다 */
+  takenTitles: string[]
+  /** 제품 종류 선택지 (색조·기초 …) */
+  productLines: string[]
 }
 
 export interface KindView {
@@ -100,13 +107,29 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
   const todo: string[] = []
   const isRequired = (k: KindView) => k.required || Boolean(cat && k.requiredFor?.includes(cat.id))
   // 신규 인플루언서는 현 계약이 없어 '현 계약 만료일' 칸이 필요 없다
-  const visibleFields = (cat?.fields ?? []).filter((f) => !(isNew && f.name === 'currentExpiry'))
+  // 구분: 새 ID 는 항상 "신규" (확대·갱신은 이미 있는 대상에 대해서만)
+  const dealOptions = cat ? DEAL_TYPES[cat.id] ?? [] : []
+  const deal = isNew ? '신규' : (vals.dealType ?? '')
+  const picked = cat?.options.find((o) => o.id === refId)
+  const productLine = cat?.id === 'campaign' ? (isNew ? (vals.productLine ?? '') : (picked?.product ?? '')) : ''
+  // 대상 이름: 새 캠페인은 "인플루언서 제품종류 캠페인N"(자동), 새 인플루언서는 적은 이름, 기존 대상은 원본 이름
+  const parentId = vals.parentInfluencerId ?? ''
+  const parentName = cat?.parents.find((o) => o.id === parentId)?.name ?? ''
+  const newCampaignName = cat?.id === 'campaign' && isNew && parentId && productLine ? nextCampaignName(parentName, productLine, cat.campaignSeq[parentId] ?? 0) : ''
+  const targetName = !cat ? '' : cat.id === 'campaign' ? (isNew ? newCampaignName : picked?.name ?? '') : isNew ? ((vals.refName ?? '').trim() && newDigits ? `${(vals.refName ?? '').trim()}(${newIdFull})` : '') : picked ? `${picked.name}(${picked.id})` : ''
+  const autoTitle = cat && targetName && deal
+    ? uniqueTitle({ category: cat.id, name: targetName, deal, feeType: feeType || undefined, amountText: requestedStr ? `${Number(requestedStr).toLocaleString('ko-KR')}원` : '금액 미입력' }, cat.takenTitles)
+    : ''
+  // 신규 계약(새 인플루언서이거나 구분이 "신규")은 현 계약이 없어 '현 계약 만료일' 칸이 필요 없다
+  const visibleFields = (cat?.fields ?? []).filter((f) => !((isNew || deal === '신규') && f.name === 'currentExpiry'))
   if (cat) {
     if (!refId) todo.push(cat.refLabel)
+    if (!deal) todo.push(DEAL_LABEL[cat.id])
+    if (cat.id === 'campaign' && isNew && !productLine) todo.push('제품 종류')
     if (isNew) {
       if (!newDigits || Number(newDigits) === 0) todo.push('신규 ID 번호')
       if (idTaken) todo.push('이미 있는 분류ID')
-      if (!(vals.refName ?? '').trim()) todo.push('신규 이름')
+      if (cat.id === 'influencer' && !(vals.refName ?? '').trim()) todo.push('신규 인플루언서 이름')
       if (cat.id === 'campaign' && !(vals.parentInfluencerId ?? '')) todo.push('소속 인플루언서')
     }
     for (const f of visibleFields) if (f.required && !(vals[f.name] ?? '').trim()) todo.push(f.label)
@@ -145,6 +168,8 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
       fd.set('refId', isNew ? newIdFull : refId)
       if (isNew) fd.set('v:isNewRef', '1')
       for (const [k, v] of Object.entries(vals)) fd.set(`v:${k}`, v)
+      if (deal) fd.set('v:dealType', deal)
+      if (productLine) fd.set('v:productLine', productLine)
       if (cat.id === 'influencer') fd.set('v:requested', requestedStr)
       for (const [kind, list] of Object.entries(files)) list.forEach((f, i) => fd.append(`f:${kind}#${i}`, f))
       extras.forEach((x, i) => { fd.set(`cl:${i}`, x.label.trim()); x.files.forEach((f, j) => fd.append(`cf:${i}#${j}`, f)) })
@@ -185,6 +210,11 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
       {cat && (
         <div key={formKey} className="flex flex-col gap-3">
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {/* 제목은 자동으로 만들어져요 — 대상·구분·금액을 고르면 채워지고, 직접 고칠 수 없어요 */}
+            <label className="flex flex-col gap-1 t-small sm:col-span-2 lg:col-span-3">
+              <span className="font-semibold">제목 <span className="t-caption">(자동 생성 · 입력할 수 없어요 — 이미 있는 제목이면 확대2, 갱신2처럼 번호가 올라가요)</span></span>
+              <input className={`${INPUT} bg-muted`} disabled readOnly value={autoTitle} placeholder={`${cat.refLabel}와 ${DEAL_LABEL[cat.id]}을 고르면 제목이 만들어져요`} aria-label="제목 (자동 생성)" />
+            </label>
             <label className="flex flex-col gap-1 t-small">
               <span className="font-semibold">{cat.refLabel} <span className="t-caption">({cat.idRule}, 전사 ID 규칙)</span></span>
               <select className={INPUT} value={refId} onChange={(e) => setRefId(e.target.value)}>
@@ -203,10 +233,12 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                   </span>
                   {idTaken ? <span className="t-caption font-semibold text-danger" role="alert">이미 있는 분류ID입니다!</span> : newDigits && <span className="t-caption">등록될 ID: {newIdFull}</span>}
                 </label>
-                <label className="flex flex-col gap-1 t-small">
-                  <span className="font-semibold">신규 {cat.refLabel.replace(' ID', '')} 이름 *</span>
-                  <input className={INPUT} value={vals.refName ?? ''} onChange={(e) => set('refName')(e.target.value)} />
-                </label>
+                {cat.id === 'influencer' && (
+                  <label className="flex flex-col gap-1 t-small">
+                    <span className="font-semibold">신규 인플루언서 이름 *</span>
+                    <input className={INPUT} value={vals.refName ?? ''} onChange={(e) => set('refName')(e.target.value)} />
+                  </label>
+                )}
                 {cat.id === 'campaign' && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">소속 인플루언서 *</span>
@@ -218,6 +250,40 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                   </label>
                 )}
               </>
+            )}
+            <div className="flex flex-col gap-1 t-small">
+              <span className="font-semibold">{DEAL_LABEL[cat.id]} *{isNew && <span className="t-caption"> (새 ID 는 신규만 가능)</span>}</span>
+              <div className="flex gap-2" role="radiogroup" aria-label={DEAL_LABEL[cat.id]}>
+                {dealOptions.map((d) => {
+                  const off = isNew && d !== '신규'
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      role="radio"
+                      aria-checked={deal === d}
+                      disabled={off}
+                      onClick={() => set('dealType')(d)}
+                      className={`rounded-input border px-3 py-1 t-small ${deal === d ? 'border-primary bg-primary-soft font-semibold' : 'border-default'} ${off ? 'opacity-50' : ''}`}
+                    >
+                      {d}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            {cat.id === 'campaign' && (
+              <label className="flex flex-col gap-1 t-small">
+                <span className="font-semibold">제품 종류 *{!isNew && <span className="t-caption"> (기존 캠페인은 자동)</span>}</span>
+                {isNew ? (
+                  <select className={INPUT} value={vals.productLine ?? ''} onChange={(e) => set('productLine')(e.target.value)}>
+                    <option value="">제품 종류를 고르세요</option>
+                    {cat.productLines.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                ) : (
+                  <div className={`${INPUT} bg-muted`}>{productLine || '캠페인을 고르면 표시돼요'}</div>
+                )}
+              </label>
             )}
             {visibleFields.map((f) => (
               <label key={f.name} className="flex flex-col gap-1 t-small">

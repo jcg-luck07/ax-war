@@ -154,33 +154,41 @@ export function buildShareCompare(args: {
   perf: PerformanceResult | null
   subjectInfluencerId: string
 }): ShareCompare | null {
-  const inf = args.perf?.byInfluencer ?? []
+  // 이 기안에 요청이 들어 있는 인플루언서들끼리만 비교한다 — 집행 비중·공헌이익 순위도 이 인플루언서들 안에서 다시 계산한다
   const total = args.requests.reduce((s, r) => s + r.amount, 0)
-  if (inf.length === 0 || total <= 0) return null
   const req = new Map<string, number>()
   for (const r of args.requests) req.set(r.influencerId, (req.get(r.influencerId) ?? 0) + r.amount)
+  const inf = (args.perf?.byInfluencer ?? []).filter((i) => req.has(i.influencerId) || i.influencerId === args.subjectInfluencerId)
+  if (inf.length === 0 || total <= 0) return null
+  const spendTotal = inf.reduce((s, i) => s + i.adSpend, 0)
+  const cpOrder = [...inf].sort((x, y) => y.contributionProfit - x.contributionProfit)
+  const cpRankOf = new Map(cpOrder.map((i, k) => [i.influencerId, k + 1]))
   const rows: ShareRow[] = inf
-    .map((i) => ({ influencerId: i.influencerId, name: i.influencerName, requestShare: (req.get(i.influencerId) ?? 0) / total, requestRank: 0, cpAmount: i.contributionProfit, spendShare: i.spendShare, cpRank: i.rankByContribution }))
-    .filter((r) => r.requestShare > 0 || r.influencerId === args.subjectInfluencerId)
+    .map((i) => ({
+      influencerId: i.influencerId,
+      name: i.influencerName,
+      requestShare: (req.get(i.influencerId) ?? 0) / total,
+      requestRank: 0,
+      cpAmount: i.contributionProfit,
+      spendShare: spendTotal > 0 ? i.adSpend / spendTotal : 0,
+      cpRank: cpRankOf.get(i.influencerId) ?? null,
+    }))
     .sort((a, b) => b.requestShare - a.requestShare)
   const n = rows.length
   rows.forEach((r, i) => { r.requestRank = i + 1 })
-  // 요청 비중 순위 vs 실질 공헌이익 순위 (요청이 있는 인플루언서끼리)
-  const reqRank = new Map(rows.map((r, i) => [r.influencerId, i + 1]))
-  const cpSorted = [...rows].sort((a, b) => (a.cpRank ?? 99) - (b.cpRank ?? 99))
-  const cpRankIn = new Map(cpSorted.map((r, i) => [r.influencerId, i + 1]))
+  // 요청 비중 순위 vs 실질 공헌이익 순위 (같은 인플루언서들 안에서)
   const third = Math.ceil(n / 3)
-  const invertedTop = rows.filter((r) => (reqRank.get(r.influencerId) ?? 99) <= third && (cpRankIn.get(r.influencerId) ?? 0) > n - third).map((r) => r.name)
+  const invertedTop = rows.filter((r) => r.requestRank <= third && (r.cpRank ?? 0) > n - third).map((r) => r.name)
   let correlation: number | null = null
   if (n >= 3) {
-    const d2 = rows.reduce((s, r) => s + ((reqRank.get(r.influencerId) ?? 0) - (cpRankIn.get(r.influencerId) ?? 0)) ** 2, 0)
+    const d2 = rows.reduce((s, r) => s + (r.requestRank - (r.cpRank ?? 0)) ** 2, 0)
     correlation = 1 - (6 * d2) / (n * (n * n - 1))
   }
-  const half = Math.floor(inf.length / 2)
+  const half = Math.floor(n / 2)
   const top3 = rows.slice(0, 3)
-  const topWeak = { top: top3.length, weak: top3.filter((r) => (r.cpRank ?? 0) > inf.length - half).length }
+  const topWeak = { top: top3.length, weak: top3.filter((r) => (r.cpRank ?? 0) > n - half).length }
   const keyIds = rows.filter((r, i) => i < 4 || r.influencerId === args.subjectInfluencerId || invertedTop.includes(r.name)).map((r) => r.influencerId)
-  return { rows, total: inf.length, keyIds, topWeak, subjectId: args.subjectInfluencerId, n, invertedTop, correlation }
+  return { rows, total: n, keyIds, topWeak, subjectId: args.subjectInfluencerId, n, invertedTop, correlation }
 }
 
 export function buildProfitability(a: BuildArgs): ProfitabilityData {

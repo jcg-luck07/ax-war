@@ -60,15 +60,8 @@ export function feeText(info: FeeInfo | undefined, amount: number, revised = fal
   return `혼합 피 — 고정 피 연 ${won(info.fixedFeeKrw ?? 0)} + 성과 피 연 ${won(info.performanceFeeKrw ?? 0)}${rate}`
 }
 
-/** 제목에서 분류코드·요청액·내부 번호(SYN-/PLAN-/SUB-)를 덜어 낸다. 예: "혜인(INF-001) 연간 전속계약 갱신 — 고정 피 연 28억 원" → "혜인 연간 전속계약 갱신" */
-export function plainTitle(title: string): string {
-  return title
-    .replace(/\s+[—–-]\s+.*$/, '')
-    .replace(/\s*\((INF|CMP)-\d+\)/g, '')
-    .replace(/(^|\s)(SYN|PLAN|SUB)-[A-Z0-9]+\s*/g, '$1')
-    .replace(/\s{2,}/g, ' ')
-    .trim()
-}
+export { plainTitle } from './submission-title'
+import { plainTitle } from './submission-title'
 
 export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
   const [cases, approvals, tasks, events, draftRows] = await Promise.all([

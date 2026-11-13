@@ -16,6 +16,7 @@ import {
   ATTACHMENT_KINDS, CATEGORIES, CUSTOM_KIND, fileCheckId, checksFor, contributionFromInput, missingRequired, findOpenCasesFor, listFiles, listSubmissions, categoryById,
 } from '@/lib/modules/intake/submissions'
 import { MASIL_MODEL } from '@/lib/semantic/model'
+import { campaignNumber } from '@/lib/app/submission-title'
 import { entityRows } from '@/lib/semantic/run'
 
 export const dynamic = 'force-dynamic'
@@ -38,10 +39,19 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
     ...infl.map((i) => [String(i.influencer_id), String(i.influencer_name)] as [string, string]),
     ...camp.map((c) => [String(c.campaign_id), String(c.campaign_name)] as [string, string]),
   ])
-  const options: Record<string, { id: string; label: string }[]> = {
-    influencer: infl.map((i) => ({ id: String(i.influencer_id), label: `${i.influencer_id} ${i.influencer_name}` })),
-    campaign: camp.map((c) => ({ id: String(c.campaign_id), label: `${c.campaign_id} ${c.campaign_name}` })),
+  const options: Record<string, { id: string; label: string; name: string; product?: string }[]> = {
+    influencer: infl.map((i) => ({ id: String(i.influencer_id), label: `${i.influencer_id} ${i.influencer_name}`, name: String(i.influencer_name) })),
+    campaign: camp.map((c) => ({ id: String(c.campaign_id), label: `${c.campaign_id} ${c.campaign_name}`, name: String(c.campaign_name), product: String(c.product_line) })),
   }
+  // 제목이 겹치지 않게: 이미 제출된 제목과 안건 제목
+  const caseTitles = (await sql`SELECT title FROM decision_cases`).map((r) => String(r.title))
+  const takenTitles = [...subs.map((x) => x.title), ...caseTitles]
+  const productLines = [...new Set(camp.map((c) => String(c.product_line)))]
+  // 새 캠페인 이름의 번호: 소속 인플루언서별로 가장 큰 번호 (원본 캠페인 + 이미 제출된 신규 캠페인)
+  const campaignSeq: Record<string, number> = {}
+  const bump = (parent: string, name: string) => { campaignSeq[parent] = Math.max(campaignSeq[parent] ?? 0, campaignNumber(name)) }
+  for (const c of camp) bump(String(c.influencer_id || 'NONE'), String(c.campaign_name))
+  for (const x of subs) if (x.category === 'campaign' && x.input.isNewRef === '1' && x.status !== 'returned') bump(x.input.parentInfluencerId || 'NONE', x.input.refName ?? '')
   // 신규 ID 제안: 원본 + 이미 제출된 신규 ID 중 가장 큰 번호의 다음 번호
   const nextOf = (prefix: string, width: number, ids: string[]) => {
     const used = [...ids, ...subs.filter((x) => x.input.isNewRef === '1').map((x) => x.refId)]
@@ -57,7 +67,8 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
       ...(c.id === 'influencer' ? infl.map((i) => String(i.influencer_id)) : camp.map((x) => String(x.campaign_id))),
       ...subs.filter((x) => x.category === c.id && x.input.isNewRef === '1' && x.status !== 'returned').map((x) => x.refId),
     ],
-    parents: options.influencer ?? [],
+    parents: (options.influencer ?? []).map((o) => ({ id: o.id, label: o.label, name: o.name })),
+    takenTitles, productLines, campaignSeq,
     idPrefix: c.id === 'influencer' ? 'INF-' : 'CMP-',
     idDigits: c.id === 'influencer' ? 3 : 4,
   }))

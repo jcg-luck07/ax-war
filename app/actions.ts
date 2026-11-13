@@ -17,6 +17,9 @@ import { answerAllOpenInfo } from '@/lib/modules/w02/draft'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { ROLES } from '@/lib/rules/authority.rules'
 import type { Sql } from 'postgres'
+import { runClaudeJudgment } from '@/lib/modules/w02/ai-claude'
+import type { Judgment } from '@/lib/modules/w02/ai-judgment'
+import type { JudgmentInput } from '@/lib/modules/w02/judgment-input'
 
 export interface ActionResult {
   ok: boolean
@@ -41,6 +44,29 @@ async function guarded(fn: (user: AppUser, sql: Sql) => Promise<string>, opts: {
 
 const needRole = (user: AppUser) => {
   if (!canWork(user)) throw new EngineError('역할이 없어요. 관리자에게 역할 부여를 요청하세요.')
+}
+
+// ───────── AI 판단 (Claude API) ─────────
+
+export type AiJudgmentActionResult =
+  | { ok: true; judgment: Judgment; model: string; inputTokens: number; outputTokens: number }
+  | { ok: false; message: string }
+
+/** 수익성 검증의 AI 판단을 Claude 에게 묻는다. 버튼을 눌렀을 때만 부른다 (호출마다 비용이 든다). */
+export async function runAiJudgmentAction(input: JudgmentInput): Promise<AiJudgmentActionResult> {
+  try {
+    const { sql } = await getEngine()
+    const user = await currentUser(sql)
+    if (!user.authenticated) return { ok: false, message: '로그인이 필요해요.' }
+    if (!canWork(user)) return { ok: false, message: '역할이 없어요. 관리자에게 역할 부여를 요청하세요.' }
+    // 화면이 보낸 입력의 모양과 크기를 확인한다 (엉뚱한 내용이나 너무 큰 내용으로 비용이 나가지 않도록)
+    if (!input || typeof input !== 'object' || !input.caseInfo || !input.profitability || !input.company) return { ok: false, message: '판단에 필요한 자료가 없어요. 화면을 새로고침해 주세요.' }
+    if (JSON.stringify(input).length > 300_000) return { ok: false, message: '입력이 너무 커요.' }
+    const r = await runClaudeJudgment(input)
+    return { ok: true, ...r }
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : String(e) }
+  }
 }
 
 // ───────── 결정 · 회신 · 작업 ─────────
