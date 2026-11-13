@@ -108,6 +108,10 @@ export const fmtDateTime = (iso: string) =>
   new Date(iso).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 
 /** D-day 문구: 16일 남음 / 오늘 마감 / 3일 지남 */
+/** 계약 체결 기한이 4주(28일) 이내(이미 지난 것 포함)인가 — 목록에서 날짜를 빨간색으로 보여 준다 */
+export const DEADLINE_ALERT_DAYS = 28
+export const deadlineAlertClass = (days: number | null): string => (days !== null && days <= DEADLINE_ALERT_DAYS ? 'font-semibold text-danger' : '')
+
 export function ddayText(days: number | null): string {
   if (days === null) return '마감 없음'
   if (days === 0) return '오늘 마감'

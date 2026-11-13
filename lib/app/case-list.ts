@@ -1,7 +1,7 @@
 // 안건 목록 화면용 조회 (서버 전용). 안건·승인·작업·이력을 한꺼번에 읽어 한 줄(CaseRow)로 만든다. 엔진 상태는 바꾸지 않는다.
 import type { Sql } from 'postgres'
 import { listCases } from '@/lib/engine/engine'
-import { flowForCaseType } from '@/lib/process/definitions'
+import { flowForCaseType, flowWithGroup300, usesGroup300Flow } from '@/lib/process/definitions'
 import { deriveFlowState, type FlowView } from '@/lib/process/state'
 import { stateText } from '@/lib/process/status'
 import { CASE_TYPE_CATEGORY, caseTypeLabel, type CategoryId } from './labels'
@@ -86,14 +86,14 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
 
   return cases.map((c) => {
     const payload = c.payload as { facts?: Facts; plan?: Record<string, string | null>; evaluation?: { facts?: Facts } }
-    const facts: Facts = { ...(payload.facts ?? {}), ...(payload.evaluation?.facts ?? {}) }
+    const facts: Facts = { ...(payload.evaluation?.facts ?? {}), ...(payload.facts ?? {}) } // 입력 값(payload.facts, 수정 보고로 바뀐 금액 포함)이 마지막 평가 값보다 우선
     const cat = CASE_TYPE_CATEGORY[c.caseType] ?? null
     const amount = Number(cat === 'influencer' ? facts.annual_contract_value_krw : facts.per_plan_amount_krw)
     const settlement = (cat === 'influencer' ? facts.fixed_fee_payment_date : facts.settlement_date ?? payload.plan?.settlement_date) as string | null | undefined
 
-    const def = flowForCaseType(c.caseType)
+    const baseDef = flowForCaseType(c.caseType)
     const view: FlowView = {
-      case: { status: c.status, authority: c.authority },
+      case: { status: c.status, authority: c.authority, payload: { group300Excluded: (c.payload as { group300Excluded?: unknown }).group300Excluded } },
       approvals: (ap.get(c.id) ?? []).map((a) => ({ status: a.status, requiredRole: a.required_role, kind: a.kind ?? 'main' })),
       tasks: (tk.get(c.id) ?? []).map((t) => ({ taskType: t.task_type, status: t.status, title: t.title, assigneeRole: t.assignee_role, detail: t.detail ?? {} })),
       events: (ev.get(c.id) ?? []).map((e) => ({ eventType: e.event_type })),
@@ -103,9 +103,11 @@ export async function loadCaseRows(sql: Sql): Promise<CaseRow[]> {
     const evalDecision = (c.payload as { evaluation?: { decision?: { status?: string; also?: string[] } } }).evaluation?.decision
     const decidedAuth = evalDecision?.status === 'decided' ? c.authority : null
     const approverLabel = pending ? roleLabel(pending.requiredRole) : decidedAuth ? roleLabel(decidedAuth) : '승인권자 미확정'
-    const st = def ? deriveFlowState(def, view) : null
     const decidedMain = [...view.approvals].reverse().find((a) => (a.kind ?? 'main') === 'main' && ['approved', 'rejected', 'on_hold'].includes(a.status))
     const outcome = (decidedMain?.status ?? null) as 'approved' | 'rejected' | 'on_hold' | null
+    // 그룹 300억 배분 대상 안건은 CEO/이사회 결정 → (부결이면) 재결정 흐름
+    const def = baseDef && usesGroup300Flow(c.payload as { facts?: Record<string, unknown>; group300Excluded?: unknown }, outcome) ? flowWithGroup300(baseDef) : baseDef
+    const st = def ? deriveFlowState(def, view) : null
     const s = stateText(def, st, c.status, approverLabel)
     return {
       id: c.id,

@@ -3,11 +3,12 @@
 // 화면의 상호작용 조각(승인·회신·조건 변경·작업 완료·재보고·접수·사용자 권한). 저장은 모두 app/actions.ts 의 서버 동작이 한다.
 // 누가 할 수 있는지는 서버가 로그인 사용자의 역할로 다시 확인하고, 여기서는 안내 문구와 버튼 비활성화만 한다.
 import { useState, useTransition } from 'react'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useConfirm } from '@/components/ax'
 import { Button, Checkbox, Input, Label, Radio, RadioGroup, TextField, toast } from '@heroui/react'
-import type { Outcome } from '@/lib/engine/engine'
 import {
-  bulkReplyAction, completeTaskAction, decideAction, importPlansAction, provideInfoAction, removeUserAction,
+  addCandidateAction, bulkReplyAction, completeTaskAction, removeCandidateAction, provideInfoAction, removeUserAction,
   resubmitAction, setUserRolesAction, updateFactAction, type ActionResult,
 } from '@/app/actions'
 
@@ -26,27 +27,42 @@ function useRun() {
   return { pending, run }
 }
 
+// ── 후보 표시 ──
+// 이 안건이 미확정(후보) 목록에 올라 있으면 안건 화면에 알려 준다. 후보에서 뺄 수도 있다.
+export function CandidateBadge({ caseId, label, addedBy, canRemove }: { caseId: number; label: string; addedBy: string; canRemove: boolean }) {
+  const { pending, run } = useRun()
+  const router = useRouter()
+  return (
+    <div className="flex flex-wrap items-center gap-2 border border-primary bg-primary-soft p-2" style={{ borderRadius: 2 }}>
+      <span className="t-small"><strong>이미 &quot;{label}&quot;로 들어가 있는 안건이에요</strong> <span className="t-caption">({addedBy}) · 안건 상태는 바뀌지 않았고, 안건 목록 위쪽의 미확정 안건에서 확정해요. 다른 처리를 하려면 먼저 후보에서 빼세요.</span></span>
+      <Link href="/cases" className="t-small underline">미확정 안건 보기</Link>
+      {canRemove && <Button size="sm" isDisabled={pending} onPress={() => run(() => removeCandidateAction({ caseIds: [caseId] }), () => router.refresh())}>후보에서 빼기</Button>}
+    </div>
+  )
+}
+
 // ── 승인 패널 ──
-// 승인권자는 세 가지 중 하나를 고른다.
+// 승인권자는 세 가지 중 하나를 후보로 넣는다 (바로 확정하지 않는다 — 안건 목록 위쪽의 미확정 안건에서 확정).
 //   승인   — 계약 담당이 이어서 절차를 진행한다.
 //   부결   — 이 안건을 진행하지 않는다 (캠페인: 집행하지 않음 → 계약 담당이 후속 처리 후 종결 / 인플루언서: 계약을 연장하지 않음 → 계약 담당 후속조치 → 승인권자 재승인 → 통지서 발송 후 종결).
 //   재검토 — 처음 안건을 올린 부서로 돌려보내 보완한 뒤 재무팀부터 처음부터 다시 절차를 진행한다. 남은 계약 기한이 3주 이내면 먼저 경고한다.
 // kind 'nonrenewal'(부결 뒤 계약 미갱신 통지서 승인)에서는 승인·재검토만 고를 수 있다.
 export function DecisionPanel({
-  approvalId, requiredLabel, allowed, myRoles, warning = null, reviewWarning = null, kind = 'main', isContract = false,
+  caseId, requiredLabel, allowed, myRoles, warning = null, reviewWarning = null, kind = 'main', isContract = false,
 }: {
-  approvalId: number; requiredLabel: string; allowed: boolean; myRoles: string; warning?: string | null; reviewWarning?: string | null; kind?: string; isContract?: boolean
+  caseId: number; requiredLabel: string; allowed: boolean; myRoles: string; warning?: string | null; reviewWarning?: string | null; kind?: string; isContract?: boolean
 }) {
   const { pending, run } = useRun()
   const confirm = useConfirm()
   const [comment, setComment] = useState('')
-  const go = async (outcome: Outcome) => {
-    // 연관 안건에 부결이 있는데 승인하려면 한 번 더 묻는다
-    if (outcome === 'approved' && warning && !(await confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: '그래도 승인하시겠습니까?', confirmLabel: '승인', cancelLabel: '취소', variant: 'warning' }))) return
-    // 남은 계약 기한이 3주 이내인데 재검토하면 기한을 넘길 수 있다
-    if (outcome === 'on_hold' && reviewWarning && !(await confirm({ title: '남은 계약 기한이 얼마 없어요', description: reviewWarning, details: '그래도 재검토로 돌려보내시겠습니까?', confirmLabel: '재검토', cancelLabel: '취소', variant: 'warning' }))) return
-    if (outcome === 'rejected' && !(await confirm({ title: '부결하시겠습니까?', description: isContract ? '계약을 연장하지 않는 결정이에요. 이후 계약 담당이 후속조치(계약 미갱신 통지서 결재 보고)를 하고, 승인권자가 그 통지서를 다시 승인해야 해요.' : '이 캠페인을 진행하지 않는 결정이에요. 이후 절차는 계약 담당이 맡아요.', confirmLabel: '부결', cancelLabel: '취소', variant: 'danger' }))) return
-    run(() => decideAction({ approvalId, outcome, comment }))
+  const router = useRouter()
+  // 바로 확정하지 않고 후보로 넣는다 (안건 상태는 바뀌지 않는다). 확인창은 전환(run) 밖에서 기다린다.
+  const go = async (kind: 'approve' | 'reject' | 'hold') => {
+    // 연관 안건에 부결이 있는데 승인 후보로 넣으려면 한 번 더 묻는다
+    if (kind === 'approve' && warning && !(await confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: '그래도 승인 후보로 넣으시겠습니까?', confirmLabel: '후보로 넣기', cancelLabel: '취소', variant: 'warning' }))) return
+    // 남은 계약 기한이 3주 이내인데 재검토 후보로 넣으면 기한을 넘길 수 있다
+    if (kind === 'hold' && reviewWarning && !(await confirm({ title: '남은 계약 기한이 얼마 없어요', description: reviewWarning, details: '그래도 재검토 후보로 넣으시겠습니까?', confirmLabel: '후보로 넣기', cancelLabel: '취소', variant: 'warning' }))) return
+    run(() => addCandidateAction({ caseId, kind, params: { comment } }), () => router.refresh())
   }
   return (
     <div className="flex flex-col gap-4">
@@ -62,18 +78,18 @@ export function DecisionPanel({
           </TextField>
           <div className="flex flex-col gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Button isDisabled={pending} onPress={() => go('approved')}>승인</Button>
-              <span className="t-caption">계약 담당이 이어서 절차를 진행해요.</span>
+              <Button isDisabled={pending} onPress={() => go('approve')}>승인 후보로 넣기</Button>
+              <span className="t-caption">확정하면 계약 담당이 이어서 절차를 진행해요.</span>
             </div>
             {kind === 'main' && (
               <div className="flex flex-wrap items-center gap-2">
-                <Button isDisabled={pending} variant="outline" data-color="danger" onPress={() => go('rejected')}>부결</Button>
-                <span className="t-caption">{isContract ? '계약을 연장하지 않아요. 계약 담당이 후속조치를 한 뒤 다시 승인을 받아요.' : '이 캠페인을 진행하지 않아요. 계약 담당이 후속 처리 후 종결해요.'}</span>
+                <Button isDisabled={pending} variant="outline" data-color="danger" onPress={() => go('reject')}>부결 후보로 넣기</Button>
+                <span className="t-caption">{isContract ? '확정하면 계약을 연장하지 않아요. 계약 담당이 후속조치를 한 뒤 다시 승인을 받아요.' : '확정하면 이 캠페인을 진행하지 않아요. 계약 담당이 후속 처리 후 종결해요.'}</span>
               </div>
             )}
             <div className="flex flex-wrap items-center gap-2">
-              <Button isDisabled={pending} variant="outline" onPress={() => go('on_hold')}>재검토</Button>
-              <span className="t-caption">{kind === 'main' ? '처음 올린 마케팅으로 돌려보내 보완한 뒤, 재무팀부터 처음부터 다시 절차를 진행해요.' : '계약 담당에게 돌려보내 보완한 뒤 다시 보고하게 해요.'}</span>
+              <Button isDisabled={pending} variant="outline" onPress={() => go('hold')}>재검토 후보로 넣기</Button>
+              <span className="t-caption">{kind === 'main' ? '확정하면 처음 올린 마케팅으로 돌려보내 보완한 뒤, 재무팀부터 처음부터 다시 절차를 진행해요.' : '확정하면 계약 담당에게 돌려보내 보완한 뒤 다시 보고하게 해요.'}</span>
             </div>
           </div>
         </>
@@ -209,16 +225,6 @@ export function ResubmitButton({ caseId, allowed }: { caseId: number; allowed: b
   return (
     <Button variant="secondary" isDisabled={pending || !allowed} onPress={() => run(() => resubmitAction({ caseId, reason: '조건을 보완해 재보고' }))}>
       다시 보고하기 (재무팀부터 다시 진행)
-    </Button>
-  )
-}
-
-// ── 안건 접수 ──
-export function ImportPlansButton({ fresh }: { fresh: number }) {
-  const { pending, run } = useRun()
-  return (
-    <Button isDisabled={pending || fresh === 0} onPress={() => run(() => importPlansAction())}>
-      {fresh === 0 ? '새로 접수할 기안이 없어요' : `새 기안 ${fresh}건 접수`}
     </Button>
   )
 }

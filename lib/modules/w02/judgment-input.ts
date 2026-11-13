@@ -47,12 +47,21 @@ export interface CompanyView {
   dist: { contributionProfit: Distribution | null; cpRate: Distribution | null; poas: Distribution | null }
 }
 
+/** 수정 보고로 금액이 바뀐 이력 — AI 가 바뀐 금액 기준으로 판단하고 바뀐 이유를 함께 보게 한다 */
+export interface AmountHistory {
+  currentKrw: number
+  originalKrw: number
+  revisions: { no: number; fromKrw: number; toKrw: number; pct: number; reason: string }[]
+}
+
 export interface JudgmentInput {
   caseInfo: {
     kind: 'influencer' | 'campaign'
     subjectName: string
     /** 대상 값의 출처 */
     basis: ProfitabilityData['basis']
+    /** 수정 보고가 있었던 안건만 — 현재 금액·원래 금액·수정 보고 내역. (수정 보고가 없으면 이 칸 자체가 없다) */
+    amount?: AmountHistory
   }
   /** 수익성 검증 표 전체 (대상 값, 비교 묶음, 표의 지표별 순위, 누락 자료) */
   profitability: ProfitabilityData
@@ -110,6 +119,8 @@ export interface BuildInputArgs {
   perf: PerformanceResult | null
   subject: { influencerId: string; campaignId?: string }
   allocation: ShareCompare | null
+  /** 수정 보고 이력 (없거나 비어 있으면 입력에 넣지 않는다) */
+  amount?: AmountHistory | null
   fees: { feeType?: string | null; fixedFeeKrw?: number | null; performanceFeeKrw?: number | null; performanceRate?: number | null; hasPerfFee?: boolean }
 }
 
@@ -122,7 +133,7 @@ export function buildJudgmentInput(a: BuildInputArgs): JudgmentInput {
   const influencers = view(infs.map((i) => rowOf(i, i.influencerId, i.influencerName, i.influencerId, i.influencerId === a.subject.influencerId && !a.subject.campaignId, i.rankByContribution, i.rankByGmv)))
   const rateKnown = Number(a.fees.performanceRate ?? 0) > 0
   return {
-    caseInfo: { kind: a.profitability.kind, subjectName: a.profitability.subjectName, basis: a.profitability.basis },
+    caseInfo: { kind: a.profitability.kind, subjectName: a.profitability.subjectName, basis: a.profitability.basis, ...(a.amount && a.amount.revisions.length > 0 ? { amount: a.amount } : {}) },
     profitability: a.profitability,
     company: { campaigns, influencers },
     allocation: a.allocation,

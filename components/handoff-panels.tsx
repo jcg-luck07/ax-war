@@ -2,11 +2,13 @@
 
 // 부서 사이 회부 화면 — 재무팀(300억 배분 대상 확인 → 성과·비용표 취합 → 회부), 계약 담당(계약서 첨부 + 조건·기한 확인 → 회부).
 // 승인권자 앞 단계의 회부는 두 가지 중 하나를 골라요: ① 이전에 거쳐 온 팀에 보완요청 ② 다음 팀으로 절차진행.
+// 버튼은 바로 처리하지 않고 "후보로 넣기"예요. 후보는 안건 목록 위쪽의 미확정 안건에 모이고, 거기서 확정해야 실제로 회부돼요 (안건 상태는 바뀌지 않아요).
 // 해당 부서의 사람에게만 서버가 이 패널을 그려 준다. 실제 권한은 서버 동작이 다시 확인한다.
 import { useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button, toast } from '@heroui/react'
-import { completeTaskAction, contractReferAction, financeReferAction, nonrenewalRequestAction, reworkRequestAction } from '@/app/actions'
+import { addCandidateAction, completeTaskAction, nonrenewalRequestAction } from '@/app/actions'
+import type { CandidateParams } from '@/lib/modules/w02/candidates'
 import { NumberedList } from '@/components/NumberedList'
 import { useConfirm } from '@/components/ax'
 
@@ -92,7 +94,7 @@ function CheckList({ items, on, setOn }: { items: CheckItem[]; on: Record<string
  * 고른 방향에 맞는 "○○팀으로 회부하기" 버튼 하나로 처리한다.
  */
 function RouteChoice({
-  caseId, fromKey, teams, nextLabel, ready, notReadyHint, onProceed, confirmProceed,
+  caseId, fromKey, teams, nextLabel, ready, notReadyHint, proceedParams, confirmProceed,
 }: {
   caseId: number
   fromKey: 'collect-performance' | 'confirm-terms'
@@ -101,7 +103,8 @@ function RouteChoice({
   /** 절차진행에 필요한 확인(체크리스트 등)이 모두 끝났는가 */
   ready: boolean
   notReadyHint: string
-  onProceed: () => Promise<{ ok: boolean; message: string }>
+  /** 절차진행 후보에 함께 담을 값 (예: 재무팀의 300억 배분 대상 여부) */
+  proceedParams: CandidateParams
   /** 절차진행 전에 한 번 더 묻고 싶을 때 (연관 안건 경고 등). false 면 멈춘다. 전환 밖에서 기다린다. */
   confirmProceed?: () => Promise<boolean>
 }) {
@@ -119,7 +122,9 @@ function RouteChoice({
   }
   const send = () =>
     start(async () => {
-      const r = mode === 'proceed' ? await onProceed() : await reworkRequestAction({ caseId, fromKey, toRole: team, note })
+      const r = mode === 'proceed'
+        ? await addCandidateAction({ caseId, kind: 'proceed', params: proceedParams })
+        : await addCandidateAction({ caseId, kind: 'rework', params: { toRole: team, note } })
       if (r.ok) { toast.success(r.message); router.refresh() } else toast.danger(r.message)
     })
   return (
@@ -152,9 +157,10 @@ function RouteChoice({
         <span><strong>{euro(nextLabel)} 절차진행</strong> <span className="t-caption">(다음 진행 팀으로 자동 선택돼요)</span></span>
       </label>
       <div className="flex flex-wrap items-center gap-2 pt-1">
-        <Button isDisabled={disabled} onPress={go}>{mode === 'rework' ? `${euro(teamLabel)} 회부하기` : `${euro(nextLabel)} 회부하기`}</Button>
+        <Button isDisabled={disabled} onPress={go}>{mode === 'rework' ? `${euro(teamLabel)} 보완요청 후보로 넣기` : `${euro(nextLabel)} 회부 후보로 넣기`}</Button>
         {mode === '' && <span className="t-caption">보완요청과 절차진행 중 하나를 고르세요.</span>}
         {mode === 'proceed' && !ready && <span className="t-caption">{notReadyHint}</span>}
+        {mode !== '' && <span className="t-caption">후보로 넣어도 안건 상태는 바뀌지 않아요. 안건 목록 위쪽의 미확정 안건에서 확정해요.</span>}
       </div>
     </div>
   )
@@ -179,8 +185,7 @@ export function FinanceReferItems({
   const done = items.filter((i) => on[i.key]).length
   const ready = linked !== '' && done === items.length
   const confirmProceed = async () =>
-    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' })
-  const proceed = () => financeReferAction({ caseId, linked: linked === 'yes' })
+    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부 후보로 넣으시겠습니까?`, confirmLabel: '후보로 넣기', cancelLabel: '취소', variant: 'warning' })
   return (
     <NumberedList
       start={start}
@@ -226,7 +231,7 @@ export function FinanceReferItems({
               nextLabel={nextLabel}
               ready={ready}
               notReadyHint={`${linked === '' ? '300억 배분 대상 여부를 고르고, ' : ''}모든 항목을 체크해야 절차진행할 수 있어요.`}
-              onProceed={proceed}
+              proceedParams={{ linked: linked === 'yes' }}
               confirmProceed={confirmProceed}
             />
           ),
@@ -267,8 +272,7 @@ export function ContractReferPanel({
     })
   }
   const confirmProceed = async () =>
-    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부하시겠습니까?`, confirmLabel: '회부', cancelLabel: '취소', variant: 'warning' })
-  const proceed = () => contractReferAction({ caseId })
+    !warning || confirm({ title: '연관 안건에 부결이 있어요', description: warning, details: `그래도 ${euro(nextLabel)} 회부 후보로 넣으시겠습니까?`, confirmLabel: '후보로 넣기', cancelLabel: '취소', variant: 'warning' })
 
   return (
     <div className="flex flex-col gap-2">
@@ -297,7 +301,7 @@ export function ContractReferPanel({
         nextLabel={nextLabel}
         ready={ready}
         notReadyHint={`${files.length === 0 ? '계약서를 첨부하고, ' : ''}모든 항목을 체크해야 절차진행할 수 있어요.`}
-        onProceed={proceed}
+        proceedParams={{}}
         confirmProceed={confirmProceed}
       />
     </div>

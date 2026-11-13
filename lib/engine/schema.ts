@@ -156,6 +156,30 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
   await sql`ALTER TABLE case_files ADD COLUMN IF NOT EXISTS revision integer` // 수정 보고 첨부면 몇 번째 수정 보고인지
   await sql`CREATE INDEX IF NOT EXISTS case_files_case_idx ON case_files (case_id)`
 
+  // ⑤-2 AI 판단 저장 — 안건마다 가장 최근에 Claude 가 한 판단 한 건. 판단 입력의 해시가 같으면 그 판단을 그대로 다시 보여 준다.
+  await sql`
+    CREATE TABLE IF NOT EXISTS ai_judgments (
+      case_id       bigint      PRIMARY KEY REFERENCES decision_cases(id) ON DELETE CASCADE,
+      input_hash    text        NOT NULL,
+      judgment      jsonb       NOT NULL,
+      model         text        NOT NULL,
+      input_tokens  integer     NOT NULL DEFAULT 0,
+      output_tokens integer     NOT NULL DEFAULT 0,
+      created_at    timestamptz NOT NULL DEFAULT now()
+    )
+  `
+
+  // ⑤-3 미확정(후보) 안건 — 회부·승인·부결·재검토 등을 바로 확정하지 않고 먼저 모아 두는 목록. 안건 상태는 바꾸지 않는다. 안건마다 후보 하나.
+  await sql`
+    CREATE TABLE IF NOT EXISTS case_candidates (
+      case_id    bigint      PRIMARY KEY REFERENCES decision_cases(id) ON DELETE CASCADE,
+      kind       text        NOT NULL,                    -- proceed(회부) / rework(보완요청) / approve / reject / hold(재검토)
+      params     jsonb       NOT NULL DEFAULT '{}'::jsonb,
+      added_by   text        NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )
+  `
+
   // ⑥ 원본 행 복사본 — CSV 한 줄을 그대로 담는다. 원본 파일은 읽기만 하고 절대 고치지 않는다.
   await sql`
     CREATE TABLE IF NOT EXISTS source_rows (

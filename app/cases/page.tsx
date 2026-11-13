@@ -1,11 +1,15 @@
+import Link from 'next/link'
 import { Card } from '@heroui/react'
+import { ArrowLeft, FolderOpen } from '@phosphor-icons/react/ssr'
 import { AppShell } from '@/components/AppShell'
 import { CaseDetail } from '@/components/CaseDetail'
 import { CaseFilters } from '@/components/CaseFilters'
 import { CaseTable } from '@/components/CaseTable'
+import { PendingSection } from '@/components/PendingSection'
+import { currentUser } from '@/lib/app/auth'
 import { PageHeader } from '@/components/ax'
 import { AS_OF, getEngine } from '@/lib/app/engine'
-import { ddayText, fmtWon } from '@/lib/app/format'
+import { ddayText, deadlineAlertClass, fmtWon } from '@/lib/app/format'
 import { loadCaseRows, loadDraftRows, type CaseRow, type DraftRow } from '@/lib/app/case-list'
 import { assignDrafts } from '@/lib/app/drafts'
 import { CATEGORY_LABEL } from '@/lib/app/labels'
@@ -14,10 +18,11 @@ import { allStateTexts } from '@/lib/process/status'
 
 export const dynamic = 'force-dynamic'
 
-type SortKey = 'code' | 'title' | 'type' | 'amount' | 'state' | 'settle' | 'deadline'
+type SortKey = 'code' | 'title' | 'draft' | 'type' | 'amount' | 'state' | 'settle' | 'deadline'
 const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
   { key: 'code', label: '분류코드' },
   { key: 'title', label: '안건' },
+  { key: 'draft', label: '속한 기안서' },
   { key: 'type', label: '종류' },
   { key: 'amount', label: '요청금액', align: 'right' },
   { key: 'state', label: '상태' },
@@ -26,16 +31,16 @@ const COLUMNS: { key: SortKey; label: string; align?: 'right' }[] = [
 ]
 
 // 열의 처음 폭(px) — 표에서 경계를 끌어 바꿀 수 있다
-const WIDTH: Record<SortKey, number> = { code: 110, title: 300, type: 130, amount: 150, state: 190, settle: 120, deadline: 170 }
+const WIDTH: Record<SortKey, number> = { code: 110, title: 300, draft: 220, type: 130, amount: 150, state: 190, settle: 120, deadline: 170 }
 
 /** 정렬 값 — 비어 있는 값은 어느 방향이든 맨 아래로 간다 */
-const sortValue = (r: CaseRow, k: SortKey): string | number | null =>
-  k === 'code' ? r.code || null : k === 'title' ? r.title : k === 'type' ? r.categoryLabel : k === 'amount' ? r.amount : k === 'state' ? r.stage * 1000 + r.id : k === 'settle' ? r.settlementDate : r.deadline
+const sortValue = (r: CaseRow, k: SortKey, draftName: string): string | number | null =>
+  k === 'code' ? r.code || null : k === 'title' ? r.title : k === 'draft' ? draftName : k === 'type' ? r.categoryLabel : k === 'amount' ? r.amount : k === 'state' ? r.stage * 1000 + r.id : k === 'settle' ? r.settlementDate : r.deadline
 
-// 기안 표 (맨 위): 기안마다 안건을 묶어 한 줄로 보여 준다
+// 기안서 표 (처음 화면): 기안서마다 안건을 묶어 한 줄로 보여 준다. 기안서를 열면 그 안의 안건 표가 나온다 (폴더 안의 파일처럼)
 type DraftSort = 'name' | 'type' | 'count' | 'amount' | 'state' | 'deadline'
 const DRAFT_COLUMNS: { key: DraftSort; label: string; align?: 'right'; width: number }[] = [
-  { key: 'name', label: '기안', width: 300 },
+  { key: 'name', label: '기안서', width: 300 },
   { key: 'type', label: '종류', width: 140 },
   { key: 'count', label: '안건 수', align: 'right', width: 90 },
   { key: 'amount', label: '요청금액 합계', align: 'right', width: 170 },
@@ -51,11 +56,12 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
   await assignDrafts(sql) // 기안이 아직 없는 안건은 기안에 넣는다 (앱 안의 분류일 뿐, 원본은 바뀌지 않는다)
   const all = await loadCaseRows(sql)
   const drafts = await loadDraftRows(sql, all)
+  const user = await currentUser(sql)
 
   const qs = (over: Record<string, string | undefined>) => {
     const p = new URLSearchParams()
     for (const [k, v] of Object.entries({ ...sp, ...over })) if (v) p.set(k, v)
-    return `/cases?${p.toString()}`
+    return p.toString() ? `/cases?${p.toString()}` : '/cases'
   }
 
   // ── 기안 표 정렬 (기본: 가장 빠른 계약 체결 기한 순) ──
@@ -91,7 +97,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
   const sort = (COLUMNS.some((c) => c.key === sp.sort) ? sp.sort : 'deadline') as SortKey
   const dir = sp.dir === 'desc' ? -1 : 1
   rows.sort((a, b) => {
-    const x = sortValue(a, sort), y = sortValue(b, sort)
+    const x = sortValue(a, sort, draft?.name ?? ''), y = sortValue(b, sort, draft?.name ?? '')
     if (x === null && y === null) return a.id - b.id
     if (x === null) return 1
     if (y === null) return -1
@@ -110,43 +116,31 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
   return (
     <AppShell>
       <div className="flex flex-col gap-3">
-        <PageHeader title="기안 목록" description="기안을 고르면 그 안의 안건이 나오고, 안건을 고르면 아래에 업무 흐름표와 다음 행동이 나와요. 제목 줄을 누르면 정렬돼요." />
+        <PageHeader title="안건 목록" description="맨 위에는 후보로 넣어 둔 미확정 안건이 있고, 그 아래에 기안서 목록이 나와요. 기안서를 누르면 그 안의 안건이 나오고, 안건을 누르면 아래에 업무 흐름표와 다음 행동이 나와요. 제목 줄을 누르면 정렬돼요." />
 
-        {/* 1) 기안 */}
+        {/* 미확정 안건 (맨 위): 후보로 넣어 둔 안건을 분류별로 모아 비교하고 한꺼번에 확정한다 */}
+        <PendingSection sql={sql} user={user} all={all} drafts={drafts} group={sp.pgroup} pid={sp.pid} qs={qs} />
+
+        {/* 한 상자 안에서: 기안서 목록(폴더) → 기안서 안의 안건 목록(파일). 안건 목록에서 '기안서 목록'을 누르면 다시 폴더로 돌아간다 */}
         <div className="border border-default" style={{ borderRadius: 2 }}>
-          <div className="flex items-baseline justify-between px-3 py-1.5">
-            <span className="t-small font-semibold">기안 {drafts.length}건 <span className="t-caption">(안건 {all.length}건)</span></span>
-            <span className="t-caption">정렬: {DRAFT_COLUMNS.find((c) => c.key === dsort)?.label} {ddir === 1 ? '▲' : '▼'}</span>
-          </div>
-          <CaseTable
-            storageKey="draft-table-widths-v1"
-            columns={DRAFT_COLUMNS.map((c) => ({
-              key: c.key, label: c.label, align: c.align, sortHref: draftSortHref(c.key), sortDir: dsort === c.key ? (ddir === 1 ? 'asc' : 'desc') : undefined, defaultWidth: c.width,
-            }))}
-            rows={draftRows.map((d) => ({
-              id: d.id,
-              href: qs({ draft: String(d.id), id: undefined }),
-              selected: draft?.id === d.id,
-              cells: {
-                name: d.name,
-                type: d.categoryLabel,
-                count: `${d.caseCount}건`,
-                amount: d.amount === null ? '—' : fmtWon(d.amount),
-                state: d.stateSummary,
-                deadline: d.deadline ? `${d.deadline} (${ddayText(daysUntil(d.deadline, AS_OF))})` : '—',
-              },
-            }))}
-            emptyText="기안이 없어요. 기안 접수에서 새 안건을 받으세요."
-          />
-        </div>
-
-        {/* 2) 선택한 기안 안의 안건 */}
-        {draft ? (
-          <>
-            {/* 필터와 안건 표는 한 상자 안에 둔다 — 필터가 이 표에만 걸린다는 것이 한눈에 보이도록 */}
-            <div className="border border-default" style={{ borderRadius: 2 }}>
-              <div className="flex items-baseline justify-between px-3 py-1.5">
-                <span className="t-small font-semibold">{draft.name} 안의 안건 {rows.length}건{rows.length !== inDraft.length ? ` (기안 전체 ${inDraft.length}건 중)` : ''}</span>
+          {draft ? (
+            <>
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1.5">
+                <span className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Link
+                    href={qs({ draft: undefined, id: undefined, sort: undefined, dir: undefined, type: undefined, state: undefined, basis: undefined, from: undefined, to: undefined, q: undefined })}
+                    scroll={false}
+                    className="inline-flex items-center gap-1 border border-default px-2 py-0.5 t-small hover:bg-surface"
+                    style={{ borderRadius: 2 }}
+                    aria-label="기안서 목록으로 돌아가기"
+                  >
+                    <ArrowLeft size={14} /> 기안서 목록
+                  </Link>
+                  <span className="t-small font-semibold">
+                    <FolderOpen size={16} weight="fill" className="mr-1 inline align-text-bottom" />
+                    {draft.name} 안의 안건 {rows.length}건{rows.length !== inDraft.length ? ` (기안서 전체 ${inDraft.length}건 중)` : ''}
+                  </span>
+                </span>
                 <span className="t-caption">정렬: {COLUMNS.find((c) => c.key === sort)?.label} {dir === 1 ? '▲' : '▼'}</span>
               </div>
               <CaseFilters bare types={Object.entries(CATEGORY_LABEL).map(([id, label]) => ({ id, label }))} states={states} />
@@ -159,9 +153,11 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                   id: r.id,
                   href: qs({ id: String(r.id), draft: String(draft.id) }),
                   selected: selected?.id === r.id,
+                  cellClass: { deadline: deadlineAlertClass(r.deadline ? daysUntil(r.deadline, AS_OF) : null) },
                   cells: {
                     code: r.code || '—',
                     title: r.title,
+                    draft: draft.name,
                     type: r.categoryLabel,
                     amount: r.amount === null ? '—' : fmtWon(r.amount),
                     state: r.state,
@@ -171,17 +167,41 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
                 }))}
                 emptyText="조건에 맞는 안건이 없어요."
               />
-            </div>
-          </>
-        ) : (
-          <div className="flex min-h-24 items-center justify-center border border-dashed border-default">
-            <p className="t-small text-muted">위 표에서 기안을 고르면 그 기안 안의 안건이 여기에 나와요.</p>
-          </div>
-        )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-baseline justify-between px-3 py-1.5">
+                <span className="t-small font-semibold">기안서 {drafts.length}건 <span className="t-caption">(안건 {all.length}건) · 기안서를 누르면 그 안의 안건이 나와요</span></span>
+                <span className="t-caption">정렬: {DRAFT_COLUMNS.find((c) => c.key === dsort)?.label} {ddir === 1 ? '▲' : '▼'}</span>
+              </div>
+              <CaseTable
+                storageKey="draft-table-widths-v1"
+                columns={DRAFT_COLUMNS.map((c) => ({
+                  key: c.key, label: c.label, align: c.align, sortHref: draftSortHref(c.key), sortDir: dsort === c.key ? (ddir === 1 ? 'asc' : 'desc') : undefined, defaultWidth: c.width,
+                }))}
+                rows={draftRows.map((d) => ({
+                  id: d.id,
+                  href: qs({ draft: String(d.id), id: undefined }),
+                  selected: false,
+                  cellClass: { deadline: deadlineAlertClass(d.deadline ? daysUntil(d.deadline, AS_OF) : null) },
+                  cells: {
+                    name: d.name,
+                    type: d.categoryLabel,
+                    count: `${d.caseCount}건`,
+                    amount: d.amount === null ? '—' : fmtWon(d.amount),
+                    state: d.stateSummary,
+                    deadline: d.deadline ? `${d.deadline} (${ddayText(daysUntil(d.deadline, AS_OF))})` : '—',
+                  },
+                }))}
+                emptyText="기안서가 없어요. 기안 접수에서 새 안건을 받으세요."
+              />
+            </>
+          )}
+        </div>
 
         {/* 3) 업무 흐름표: 처음에는 비어 있다가, 위 목록에서 안건을 고르면 여기에 나온다 */}
         {selected ? (
-          <CaseDetail caseId={selected.id} />
+          <CaseDetail key={selected.id} caseId={selected.id} />
         ) : (
           <Card>
             <Card.Header>
@@ -189,7 +209,7 @@ export default async function CasesPage({ searchParams }: { searchParams: Promis
             </Card.Header>
             <Card.Content>
               <div className="flex min-h-48 items-center justify-center border border-dashed border-default">
-                <p className="t-small text-muted">위 목록에서 안건을 고르면 업무 흐름표가 여기에 나와요.</p>
+                <p className="t-small text-muted">기안서를 열어 안건을 고르면 업무 흐름표가 여기에 나와요.</p>
               </div>
             </Card.Content>
           </Card>

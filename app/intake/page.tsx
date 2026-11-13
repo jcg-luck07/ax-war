@@ -3,15 +3,13 @@ import { Card } from '@heroui/react'
 import { AppShell } from '@/components/AppShell'
 import { PageHeader } from '@/components/ax'
 import { Pill } from '@/components/bits'
-import { ImportPlansButton } from '@/components/case-actions'
 import { AcceptReview, SubmitForm, type CategoryView, type ReviewSection } from '@/components/intake-forms'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import { canAcceptCategory, canSubmitCategory, currentUser } from '@/lib/app/auth'
 import { ddayText, fmtDateTime, fmtWon } from '@/lib/app/format'
 import { daysUntil } from '@/lib/engine/engine'
-import { calcContribution } from '@/lib/metrics/contribution-calc'
+import { calcContributionIfComplete, missingContribution } from '@/lib/metrics/contribution-calc'
 import { dateInBreachWindow } from '@/lib/modules/cash/simulate'
-import { pendingExpansionPlans } from '@/lib/modules/w02/intake'
 import {
   ATTACHMENT_KINDS, CATEGORIES, CUSTOM_KIND, fileCheckId, checksFor, contributionFromInput, missingRequired, findOpenCasesFor, listFiles, listSubmissions, categoryById,
 } from '@/lib/modules/intake/submissions'
@@ -107,7 +105,7 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
                 {user.roles.length === 0 ? (
                   <p className="t-small">역할이 있는 사람만 제출할 수 있어요.</p>
                 ) : (
-                  <SubmitForm categories={categories} kinds={ATTACHMENT_KINDS.map((k) => ({ id: k.id, label: k.label, required: k.required, requiredFor: k.requiredFor }))} />
+                  <SubmitForm categories={categories} kinds={ATTACHMENT_KINDS.map((k) => ({ id: k.id, label: k.label, required: k.required, requiredFor: k.requiredFor, existingOnly: k.existingOnly }))} />
                 )}
               </Card.Content>
             </Card>
@@ -143,7 +141,6 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
             nameOf={nameOf}
             sql={sql}
             windows={cash?.windows ?? null}
-            bulk={await pendingExpansionPlans(sql).catch(() => ({ all: [], fresh: [] }))}
           />
         )}
       </div>
@@ -152,27 +149,26 @@ export default async function IntakePage({ searchParams }: { searchParams: Promi
 }
 
 async function AcceptTab({
-  waiting, selectedId, nameOf, sql, windows, bulk,
+  waiting, selectedId, nameOf, sql, windows,
 }: {
   waiting: Awaited<ReturnType<typeof listSubmissions>>
   selectedId: number
   nameOf: Map<string, string>
   sql: Awaited<ReturnType<typeof getEngine>>['sql']
   windows: { start: string; end: string }[] | null
-  bulk: Awaited<ReturnType<typeof pendingExpansionPlans>>
 }) {
   const sel = waiting.find((s) => s.id === selectedId) ?? waiting[0]
   const files = sel ? await listFiles(sql, sel.id) : []
   const draftOptions = (await sql`SELECT id, name FROM drafts ORDER BY id`).map((d) => ({ id: Number(d.id), name: String(d.name) }))
   const dups = sel ? await findOpenCasesFor(sql, sel.category, sel.refId) : []
-  const bulkTotal = bulk.fresh.reduce((s, p) => s + Number(p.requested_budget_krw), 0)
 
   let detail = null
   if (sel) {
     const cat = categoryById(sel.category)!
     const v = sel.input
     const contrib = contributionFromInput(v)
-    const r = calcContribution(contrib)
+    const r = calcContributionIfComplete(contrib) // 비어 있는 칸이 있으면 null — 0 원으로 보고 계산하지 않는다
+    const contribMissing = missingContribution(contrib)
     const dl = daysUntil(v.contractDeadline, AS_OF)
     const inWin = windows && v.settlementDate ? dateInBreachWindow(windows as never, v.settlementDate) : null
     const isNewRef = v.isNewRef === '1'
@@ -184,7 +180,7 @@ async function AcceptTab({
         {f.filename} <span className="t-caption">({Math.max(1, Math.round(f.size / 1024))}KB)</span>
       </a>
     )
-    const money = (won: number) => fmtWon(won)
+    const money = (won: number | null) => (won === null ? '미입력' : fmtWon(won))
     // 확인할 값 옆에 바로 체크박스가 오도록, 항목마다 한 줄씩 (id 가 있는 줄이 체크 대상)
     const sections: ReviewSection[] = [
       {
@@ -197,6 +193,7 @@ async function AcceptTab({
           ...(sel.category === 'influencer' ? [{ label: '계약 방식', value: `${v.feeType || '고정 피'}${v.fixedFee ? ` · 고정 피 ${fmtWon(Number(v.fixedFee))}` : ''}${v.performanceFee ? ` · 성과 피 ${fmtWon(Number(v.performanceFee))}${v.performanceRate ? ` (귀속 GMV의 ${v.performanceRate}%)` : ''}` : ''}` }] : []),
           { id: 'amount', label: '요청금액', value: fmtWon(contrib.marketingSpend), hint: chk.amount },
           ...(v.currentExpiry ? [{ label: '현 계약 만료일', value: v.currentExpiry }] : []),
+          ...(v.autoRenew ? [{ label: '자동 갱신 여부', value: v.autoRenew }] : []),
           { id: 'memo', label: '메모', value: v.memo || '(메모 없음)', hint: chk.memo },
         ],
       },
@@ -204,9 +201,10 @@ async function AcceptTab({
         title: '첨부서류 (파일마다 열어 보고 체크)',
         rows: [
           ...files.map((f) => ({ id: fileCheckId(f.id), label: fileLabel(f), value: link(f), hint: '이 파일을 열어 내용을 확인했다' })),
-          ...(sel.category === 'influencer'
+          // 갱신·확대(원본에 있는 대상)는 기존 계약서가 필수다. 신규 ID 는 맺은 계약이 없어 이 줄이 없다. 확정 계약서는 승인 뒤 계약 담당이 만든다.
+          ...(!isNewRef
             ? [
-                { id: 'terms', label: '기존 계약서', value: files.some((f) => f.kind === 'contract') ? '성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인' : <span className="t-caption">첨부 없음 (선택 항목 — 본 계약서는 계약 담당이 만들어요)</span>, hint: chk.terms },
+                { id: 'terms', label: '기존 계약서', value: files.some((f) => f.kind === 'contract') ? '계약 조건(기간·고정 피·성과 피 정산 조건·해지/위약금)이 표시돼 있고 이번 기안과 맞는지 확인' : <span className="t-caption text-danger">첨부 없음 — 필수 서류가 빠져 있어요 (반려해서 보완하게 하세요)</span>, hint: chk.terms },
               ]
             : []),
         ],
@@ -216,13 +214,14 @@ async function AcceptTab({
         rows: [
           { label: '예상 GMV', value: money(contrib.gmv) },
           { label: '− 예상 반품 환불액', value: money(contrib.refund) },
-          { label: '= 순매출', value: money(r.netRevenue) },
+          { label: '= 순매출', value: r ? money(r.netRevenue) : '계산 불가' },
           { label: '− 제품 원가', value: money(contrib.cogs) },
           { label: '− 채널 수수료', value: money(contrib.channelFee) },
           { label: '− 출고(배송)비', value: money(contrib.shipping) },
           { label: '− 반품 물류비', value: money(contrib.returnLogistics) },
           { label: '− 마케팅 지출', value: `${money(contrib.marketingSpend)} (= 요청금액)` },
-          { id: 'calc', label: '공헌이익', value: <strong className={r.contributionProfit < 0 ? 'text-danger' : ''}>{money(r.contributionProfit)} · 실질 ROAS {r.realRoas === null ? '-' : `${r.realRoas.toFixed(2)}배`}</strong>, hint: chk.calc },
+          ...(r ? [] : [{ label: '안내', value: <span className="text-danger">비어 있는 칸({contribMissing.join(', ')}) 때문에 공헌이익을 계산할 수 없어요. 0원으로 보지 않고, 수익성 비교·순위·AI 판단에서 제외돼요. 접수하지 말고 반려해서 팀원이 빈 칸을 채우게 하거나, 재무팀에 확인을 요청하세요.</span> }]),
+          { id: 'calc', label: '공헌이익', value: r ? <strong className={r.contributionProfit < 0 ? 'text-danger' : ''}>{money(r.contributionProfit)} · 실질 ROAS {r.realRoas === null ? '-' : `${r.realRoas.toFixed(2)}배`}</strong> : <strong className="text-danger">계산 불가 (빈 칸 {contribMissing.length}개)</strong>, hint: chk.calc },
         ],
       },
       {
@@ -249,9 +248,9 @@ async function AcceptTab({
             sections={sections}
             drafts={draftOptions}
             mustCheck={[
-              ...(sel.category === 'influencer'
+              ...(!isNewRef
                 ? [
-                    { id: 'terms', text: '기존 계약서가 있으면 성과 피 정산 조건과 고정 피 금액이 표시돼 있는지 확인 (없을 수 있어요)' },
+                    { id: 'terms', text: '기존 계약서에 계약 조건(기간·고정 피·성과 피 정산 조건·해지/위약금)이 표시돼 있고 이번 기안과 맞는지 확인' },
                   ]
                 : []),
               { id: 'calc', text: '공헌이익 산출 여부 확인' },
@@ -282,19 +281,6 @@ async function AcceptTab({
         </Card>
         {detail ?? <Card><Card.Content><p className="t-small">왼쪽에서 접수할 안건을 고르세요.</p></Card.Content></Card>}
       </div>
-
-      {bulk.all.length > 0 && (
-        <Card>
-          <Card.Header>
-            <Card.Title>원본 기안 일괄 접수</Card.Title>
-            <Card.Description>원본 자료(02_masil/marketing/mkt_budget_plan_ms.csv)의 기안 {bulk.all.length}건 중 아직 접수하지 않은 건을 한꺼번에 접수해요.</Card.Description>
-          </Card.Header>
-          <Card.Content className="flex flex-col gap-2">
-            <p className="t-small">접수 대기 {bulk.fresh.length}건{bulk.fresh.length > 0 ? ` · 요청액 합계 ${fmtWon(bulkTotal)}` : ''}</p>
-            <div><ImportPlansButton fresh={bulk.fresh.length} /></div>
-          </Card.Content>
-        </Card>
-      )}
     </>
   )
 }

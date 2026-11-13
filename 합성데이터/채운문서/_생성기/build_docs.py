@@ -1,12 +1,13 @@
-# 합성 안건 서류 생성기 — 빈 양식(합성데이터/빈양식)과 같은 구성으로 값을 채운 기안서(PDF)·표준계약서(PDF)·비용편익추계서(xlsx)를 만든다.
+# 합성 안건 서류 생성기 — 빈 양식(합성데이터/빈양식)과 같은 구성으로 값을 채운 기안서(docx)·표준계약서(docx)·비용편익추계서(xlsx)를 만든다.
 # 실행: python build_docs.py        (원본 데이터는 읽지 않고, scenarios.py 의 값만 쓴다)
 import csv, html, io, json, math, os, re, shutil, subprocess, sys
-from datetime import date
+from datetime import date, timedelta
 from fractions import Fraction
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
-from scenarios import AS_OF, BREACH_FROM, BREACH_TO, INF, LEAD, PREV, SC, WRITERS  # noqa: E402
+from scenarios import AD_RATIO, AS_OF, BREACH_FROM, BREACH_TO, INF, LEAD, PREV, SC, WRITERS  # noqa: E402
+from docx_writer import build_docx  # noqa: E402
 
 OUT = os.path.dirname(HERE)  # 합성데이터/채운문서
 TMP = os.path.join(os.environ.get('TEMP', HERE), 'chaeun_html')
@@ -60,14 +61,26 @@ def derive(s):
         mk_inf = R
     refund = xround(Fr(gmv) * Fr(str(s['retrate'])))
     net = gmv - refund
-    cogs = xround(Fr(net) * Fr(str(s['cogs'])))
-    fee = xround(Fr(net) * Fr(str(s['fee'])))
+    # 원본 정의: 제품 원가 = 주문당 단가 × 수량, 채널 수수료 = GMV × 수수료율 (환불돼도 둘 다 회수하지 않는다)
+    cogsunit = int(round(s['aov'] * s['cogs'] / 100) * 100)
+    cogs = cogsunit * orders
+    fee = xround(Fr(gmv) * Fr(str(s['fee'])))
     ship = s['ship'] * orders
     retcount = round(orders * s['retrate'] * 1.1)
     retlog = s['retunit'] * retcount
-    mk = mk_inf
+    mk_perf = 0
+    if s['kind'] == 'influencer':
+        # 전속계약: 공헌이익에는 건별 마케팅 지출만 넣는다 (연 고정 피·성과 피는 5번 구역에서 따로 반영). 금액은 원본 성과 집계의 광고비÷GMV 비율로 가정
+        total = int(round(gmv * AD_RATIO[s['infl']] / 10000.0)) * 10000
+        mk_inf = int(round(total * 0.4 / 10000.0)) * 10000
+        mk_perf = total - mk_inf
+    mk = mk_inf + mk_perf
     cp = net - cogs - fee - ship - retlog - mk
-    s.update(refund=refund, net=net, cogs_amt=cogs, fee_amt=fee, ship_amt=ship, retcount=retcount, retlog=retlog, mk=mk, mk_inf=mk_inf, cp=cp,
+    fixed_fee = s['fixed'] if s['kind'] == 'influencer' else 0
+    perf_fee = (s['perf'] or 0) if s['kind'] == 'influencer' else 0
+    cp2 = cp - fixed_fee - perf_fee
+    s.update(refund=refund, net=net, cogsunit=cogsunit, cogs_amt=cogs, fee_amt=fee, ship_amt=ship, retcount=retcount, retlog=retlog, mk=mk, mk_inf=mk_inf, mk_perf=mk_perf, cp=cp,
+             cp2=cp2, real2=cp2 / (mk + fixed_fee + perf_fee) if (mk + fixed_fee + perf_fee) else None,
              real=cp / mk, nominal=gmv / mk, aov_=s['aov'])
     # 날짜 파생
     pay = s.get('pay')
@@ -75,7 +88,7 @@ def derive(s):
     s['approver'], s['approver_why'] = approver(s)
     s['no'] = int(s['tid'][1:])
     s['writer_name'] = WRITERS[s['writer']]
-    s['folder'] = f"{s['tid']}_{'집행' if s['kind'] == 'campaign' else '전속'}_{s['iname'].replace(' ', '')}_{s.get('cname', s['ref']).split()[-1] if s['kind'] == 'campaign' else s['renew']}"
+    s['folder'] = f"{s['tid']}_{(s['deal'] if s['kind'] == 'campaign' else '전속')}_{s['iname'].replace(' ', '')}_{s.get('cname', s['ref']).split()[-1] if s['kind'] == 'campaign' else s['renew']}"
     return s
 
 
@@ -153,7 +166,7 @@ def fee_line(s):
 def draft_md(s):
     camp = s['kind'] == 'campaign'
     docno = f"DR-2026-{s['doc'].month:02d}{s['doc'].day:02d}-{s['no']:03d}"
-    title = f"{s['cname']} 집행 요청" if camp else f"{s['iname']} 연간 전속계약 {s['renew']} 요청"
+    title = (f"{s['cname']} {'확대 요청' if s['deal'] == '확대' else '신규 집행 요청'}") if camp else f"{s['iname']} 연간 전속계약 {s['renew']} 요청"
     bundle = f"{s['bundle'][0]} (기안 총액 {won(s['bundle'][1])}원)" if s.get('bundle') else '단독 (기안 묶음 없음)'
     period = f"{ymd(s['start'])} ~ {ymd(s['end'])}"
     expiry = ymd(s['expiry']) if s.get('expiry') else ('해당 없음 (신규)' if s['kind'] == 'influencer' else '해당 없음')
@@ -167,15 +180,30 @@ def draft_md(s):
     missing_note = '없음' if misses[0][0] == '없음' else ''
     est_note = '비용편익추계서 · 추정'
     cp_s = f"{'−' if s['cp'] < 0 else ''}{won(abs(s['cp']))}원 · {s['real']:.2f}배"
+    if not camp:
+        cp_s += f" (고정 피·성과 피 반영 시 {'−' if s['cp2'] < 0 else ''}{won(abs(s['cp2']))}원)"
     attach_mark = '[x]'
-    contract_att = '[x]'
+    # 기존 계약서: 갱신(전속계약)·확대(캠페인)만 있다. 신규는 맺은 계약이 없어 첨부하지 않는다.
+    has_old = (camp and s['deal'] == '확대') or (not camp and s['renew'] == '갱신')
+    contract_att = '[x]' if has_old else '[ ]'
+    if camp:
+        deal_row = f"{cb(s['deal'] == '신규')} 신규 (새 캠페인 ID)  {cb(s['deal'] == '확대')} 확대 (이미 있는 캠페인의 추가 집행)"
+    else:
+        deal_row = f"{cb(s['renew'] == '신규')} 신규 (첫 전속계약)  {cb(s['renew'] == '갱신')} 갱신 (현 계약 있음)"
+    if camp and s['deal'] == '확대':
+        old_row = f"| 확대 대상 기존 캠페인 | {s['ref']} {s['cname']} · 기존 계약 {s['prev_no']} ({ymd(s['prev_start'])} ~ {ymd(s['prev_end'])}) · 기존 계약금액 {won(s['prev_amount'])}원 → 이번 확대 요청 {won(s['R'])}원 |\n"
+    elif camp:
+        old_row = "| 확대 대상 기존 캠페인 | 해당 없음 (새 캠페인 — 기존 계약서 없음) |\n"
+    else:
+        old_row = ''
     md = f"""# 기안서 (표준 양식) <span class="stamp">합성(가상) 데이터</span>
 
 | 문서 정보 | 작성란 |
 |---|---|
 | 문서번호 · 작성일 **필수** | {docno} / {ymd(s['doc'])} |
 | 작성자 · 부서 → 보고 대상 | {s['writer_name']} / 마케팅본부 인플루언서팀 → 마케팅 팀장 {LEAD} |
-| 안건 종류 · 분류 ID **필수** | {cb(s['kind'] == 'influencer')} 인플루언서 계약(전속계약 신규·갱신)  {cb(camp)} 캠페인 집행 · {s['ref']} ({'소속 ' + s['infl'] if camp else s['iname']}) |
+| 안건 종류 · 분류 ID **필수** | {cb(s['kind'] == 'influencer')} 인플루언서 계약(전속계약 신규·갱신)  {cb(camp)} 캠페인 집행(신규·확대) · {s['ref']} ({'소속 ' + s['infl'] if camp else s['iname']}) |
+| 구분 **필수** | {deal_row} |
 | 제목 · 같은 기안 묶음 | {title} · {bundle} |
 
 ## 1. 목적 · 배경 **필수**
@@ -189,7 +217,7 @@ def draft_md(s):
 | 계약·집행 기간 · 상대방 | {period} · {s['inf']['real']}({s['iname']}){' / 에이전시 ' + s['inf']['agency'] if s['inf']['agency'] else ''} |
 | **계약 체결 기한** · **지급 예정일** | {ymd(s['deadline'])}{' (갱신 통보 기한)' if s['kind'] == 'influencer' and s['renew'] == '갱신' else ''} · {ymd(s.get('pay'))} |
 | 현 계약 만료일 (갱신일 때) | {expiry} |
-
+{old_row}
 ## 3. 판단 근거 **필수** (숫자는 비용편익추계서와 같아야 해요)
 | 항목 | 값 | 근거 · 실적/추정 |
 |---|---|---|
@@ -223,8 +251,9 @@ def draft_md(s):
 
 
 # ───────── 인플루언서 전속계약서
-def inf_contract_md(s):
-    inf = s['inf']; no = f"CT-INF-2026-{s['no']:03d}"
+def inf_contract_md(s, ex=False):
+    # ex=True: 이번 갱신 전에 맺어 둔 현행(기존) 계약서 — 직전 1년 기간, 계약번호는 직전 계약번호. 조건은 '동일 조건 갱신'의 기준이 되는 현 조건이다.
+    inf = s['inf']; no = s['prev_no'] if ex else f"CT-INF-2026-{s['no']:03d}"
     y, m, d = inf['birth']
     f = s['fee_type']
     months = round(((s['end'] - s['start']).days + 1) / 30.4)
@@ -234,17 +263,23 @@ def inf_contract_md(s):
     fixed_row = f"{won(s['fixed'])}원 · 지급 예정일 {ymd(s.get('pay'))} · [x] 선급 [ ] 후급" if s['fixed'] else '해당 없음 (고정 피 없음) · 정산은 성과 피로만'
     if not s.get('pay') and s['fixed']:
         fixed_row = f"{won(s['fixed'])}원 · 지급 예정일 미확인 (갱신 합의 후 확정) · [ ] 선급 [x] 후급"
+        if ex: fixed_row = f"{won(s['fixed'])}원 · 지급 일정 미기재 (별도 협의) · [ ] 선급 [x] 후급"
     perf_rate = f"귀속 GMV의 {s['rate']:g}%" if s.get('rate') else ('귀속 GMV의 미확인% (협의 중)' if f == '혼합 피' else '해당 없음')
     perf_est = won(s['perf']) + '원 (예상 귀속 GMV ' + won(s['attr']) + '원 × 비율' + ('' if s.get('rate') else ' — 가정값') + ')' if s['perf'] else '해당 없음'
     cap = f"{won(round(s['perf'] * 1.5))}원" if s['perf'] else '해당 없음'
     floor = f"{won(round(s['perf'] * 0.4))}원" if s['perf'] and f == '성과 피' else '없음'
     total = f"{won(s['R'])}원 (= 고정 피 {won(s['fixed'])}원 + 연 예상 성과 피 {won(s['perf'])}원)"
+    if ex and f == '혼합 피' and not s.get('rate'):
+        # 현행 계약서에는 성과 피 비율이 적혀 있지 않다 (별도 합의서) — 기안서 '부족한 정보'와 같은 빈칸
+        perf_rate = '귀속 GMV의 비율 미기재 (별도 합의서에 따름)'; perf_est = '미기재'; cap = '미기재'
+        total = f"{won(s['fixed'])}원 + 연 성과 피 (비율 미기재라 합계 확정 불가)"
+    kind_row = f"| 문서 구분 | 현행(기존) 계약서 — 이번 갱신 요청 전에 맺은 계약이에요. 기간 {ymd(s['start'])} ~ {ymd(s['end'])} |\n" if ex else ''
     md = f"""# 인플루언서 전속계약서 (표준 양식) <span class="stamp">합성(가상) 데이터</span>
 
 | 문서 정보 | 작성란 |
 |---|---|
 | 계약번호 · 작성일 | {no} · {ymd(s['doc'])} |
-| 계약 구분 **필수** | {cb(s['renew'] == '신규')} 신규 체결  {cb(s['renew'] == '갱신')} 갱신 (직전 계약번호: {s['prev_no'] or '해당 없음'}) |
+{kind_row}| 계약 구분 **필수** | {cb(s['renew'] == '신규')} 신규 체결  {cb(s['renew'] == '갱신')} 갱신 (직전 계약번호: {('' if ex else s['prev_no']) or '해당 없음'}) |
 
 ## 제1조 계약 당사자
 | 구분 | 작성란 |
@@ -253,7 +288,7 @@ def inf_contract_md(s):
 | 을 (인플루언서) **필수** | 관리번호 {s['infl']} · 활동명 {inf['name']} · 성명 {inf['real']} |
 | 을 생년월일 **필수** | {y}년 {m}월 {d}일 (미성년자 여부 [ ] 예 [x] 아니오) |
 | 을 연락처 · 주소 | 가상 연락처 010-0000-0000 / {inf['country']} 가상 주소 |
-| 을 활동 채널 (플랫폼 · 계정 · 팔로워 수 · 기준일) | {inf['platform']} · @{inf['name'].replace(' ', '').lower()}_official(가상) · {inf['followers']} · 2026-06-15 기준 |
+| 을 활동 채널 (플랫폼 · 계정 · 팔로워 수 · 기준일) | {inf['platform']} · @{inf['name'].replace(' ', '').lower()}_official(가상) · {inf['followers']} · {'2025-08-15' if ex else '2026-06-15'} 기준 |
 | 을 사업자 구분 **필수** | {ownbiz} · 사업자등록번호 {inf['bizno'] or '해당 없음'} |
 | 을 정산 계좌 (가상) | 은행 가상은행 · 예금주 {inf['real']} · 계좌번호 000-0000-000000 |
 | 소속 에이전시 (선택) | {('에이전시명 ' + a + ' · 대리 권한 [x] 체결 [x] 통보 수령 [x] 정산 수령 · 수수료 부담 [ ] 갑 [x] 을') if a else '해당 없음'} |
@@ -324,8 +359,9 @@ def inf_contract_md(s):
 
 
 # ───────── 캠페인 계약서
-def cmp_contract_md(s):
-    inf = s['inf']; no = f"CT-CMP-2026-{s['no']:03d}"
+def cmp_contract_md(s, ex=False):
+    # ex=True: 확대 대상인 기존 캠페인의 현행(기존) 계약서 — 기존 기간·직전 계약번호·기존 계약금액
+    inf = s['inf']; no = s['prev_no'] if ex else f"CT-CMP-2026-{s['no']:03d}"
     y, m, d = inf['birth']
     f = s['fee_type']
     a = inf['agency']
@@ -337,11 +373,14 @@ def cmp_contract_md(s):
     cap = f"{won(round(perf * 1.5))}원" if perf else '해당 없음'
     floor_ = '없음'
     after_cancel = '20' if s['deadline'] >= AS_OF else '30'
+    deal_new = ex or s['deal'] == '신규'
+    kind_row = f"| 문서 구분 | 현행(기존) 계약서 — 이번 확대 요청 전에 맺은 계약이에요. 기간 {ymd(s['start'])} ~ {ymd(s['end'])} |\n" if ex else (f"| 문서 구분 | 확대 계약서 — 기존 캠페인 {s['ref']}({s['prev_no']})의 추가 집행. 기존 계약금액 {won(s['prev_amount'])}원은 그대로이고, 아래 금액은 이번에 추가하는 금액이에요 |\n" if s['deal'] == '확대' else '')
     md = f"""# 캠페인 계약서 (표준 양식) <span class="stamp">합성(가상) 데이터</span>
 
 | 문서 정보 | 작성란 |
 |---|---|
 | 계약번호 · 작성일 | {no} · {ymd(s['doc'])} |
+{kind_row}| 계약 구분 **필수** | {cb(deal_new)} 신규 체결  {cb(not deal_new)} 확대 (확대 대상 기존 계약번호: {('해당 없음' if deal_new else s['prev_no'])}) |
 
 ## 제1조 계약 당사자
 | 구분 | 작성란 |
@@ -460,15 +499,10 @@ def md_to_html(md):
     return '\n'.join(out)
 
 
-def to_pdf(md, pdf_path, name, onepage=False):
-    css = CSS + (ONEPAGE if onepage else '')
-    doc = f'<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{html.escape(name)}</title><style>{css}</style></head><body>{md_to_html(md)}</body></html>'
-    hp = os.path.join(TMP, re.sub(r'[^0-9A-Za-z가-힣_]', '_', name) + '.html')
-    io.open(hp, 'w', encoding='utf-8').write(doc)
-    if os.path.exists(pdf_path): os.remove(pdf_path)
-    subprocess.run([EDGE, '--headless=new', '--disable-gpu', '--no-pdf-header-footer', f'--print-to-pdf={pdf_path}', 'file:///' + hp.replace('\\', '/')], check=True, timeout=180, capture_output=True)
-    data = open(pdf_path, 'rb').read()
-    return len(re.findall(rb'/Type\s*/Page[^s]', data))
+def to_docx(md, path, name, onepage=False):
+    if os.path.exists(path): os.remove(path)
+    build_docx(md, path, name, compact=onepage)
+    return 1
 
 
 # ───────── 비용편익추계서 (xlsx)
@@ -477,14 +511,24 @@ def xlsx_values(s, docno):
     v = dict(docno=f"EST-2026-{s['doc'].month:02d}{s['doc'].day:02d}-{s['no']:03d}", ref=s['ref'], date=serial(s['doc']), writer=s['writer_name'],
              period=f"{ymd(s['start'])} ~ {ymd(s['end'])}", scenario='기준',
              orders=s['orders'], aov=s['aov'], retrate=s['retrate'],
-             cogsrate=s['cogs'], feerate=s['fee'], shipunit=s['ship'], retcount=s['retcount'], retunit=s['retunit'],
-             mk_inf=s['mk_inf'], mk_perf=0, mk_off=0)
+             cogsunit=s['cogsunit'], feerate=s['fee'], shipunit=s['ship'], retcount=s['retcount'], retunit=s['retunit'],
+             mk_inf=s['mk_inf'], mk_perf=s['mk_perf'], mk_off=0)
     notes = {}
     if camp:
         notes['mk_inf'] = f"인플루언서 건별 진행비 = 계약서 건별 계약금액 ({s['fee_type']})"
     else:
-        notes['mk_inf'] = f"연 계약금액 합계 = 고정 피 {won(s['fixed'])}원 + 연 예상 성과 피 {won(s['perf'])}원 (요청금액과 같음)"
+        notes['mk_inf'] = '연간 건별 인플루언서 진행비 (건별 마케팅 지출의 40%)'
+        notes['mk_perf'] = f"연간 퍼포먼스 광고비 (건별 마케팅 지출의 60%) — 원본 성과 집계의 광고비÷GMV 비율 {AD_RATIO[s['infl']] * 100:.1f}% 기준 가정"
         notes['orders'] = '연간 예상 주문 수 (연 예상 GMV ÷ 평균 주문금액)'
+        # 5번 구역: 연 전속 고정 피·성과 피 (공헌이익에는 들어가지 않고 여기서 따로 반영)
+        rate = s['rate'] if s.get('rate') else s.get('perf_assumed')
+        if s['fixed']:
+            v['fixed'] = s['fixed']
+            notes['fixed'] = f"계약서 연 고정 피 · 요청금액 = 고정 피 {won(s['fixed'])}원 + 연 예상 성과 피 {won(s['perf'])}원 = {won(s['R'])}원"
+        if s['perf']:
+            v['attr'] = s['attr']; v['prate'] = rate / 100
+            notes['attr'] = '연 예상 귀속 GMV (성과 피 기준 — 귀속 방식 last-click 7일 고정)'
+            notes['prate'] = '성과 피 비율' + ('' if s.get('rate') else ' (협의 전 가정값)')
     if s.get('unknown_cost'):
         v['urgent'] = '미확인'; v['cs'] = '미확인'
         notes['urgent'] = '재고·물류 담당 자료 없음 — 기안서 5항에 올림'; notes['cs'] = 'CS 건당 비용 자료 없음 — 기안서 5항에 올림'
@@ -502,9 +546,9 @@ def xlsx_values(s, docno):
         notes['prev_cp'] = '성과 자료(원본 표본) — 금액으로 환산하지 않고 순위·방향만 사용'
     else:
         v['prev_rank'] = '해당 없음 (신규)'; notes['prev_cp'] = '신규 인플루언서: 기존 실적 없음'
-    assume = ['원가·배송비는 주문 1건에 1회 적용', '환불 시 원가·수수료 회수 없음 (보수적)', '쿠폰 할인액은 GMV에 이미 반영']
+    assume = ['원가는 주문당 단가 × 주문 수, 채널 수수료는 GMV × 수수료율 (원본 정의 — 환불돼도 원가·수수료는 회수하지 않음)', '출고비는 주문 1건에 1회 적용', '쿠폰 할인액은 GMV에 이미 반영']
     if not camp:
-        assume.append('고정 피·성과 피는 마케팅 지출 합계에 포함되어 5번 구역에서 다시 빼지 않음 (5번은 비워 둠)')
+        assume.append('공헌이익에는 건별 마케팅 지출만 넣고, 연 전속 고정 피·성과 피는 5번 구역에서 따로 반영 (원본 정의)')
         if s['fee_type'] != '고정 피' and s['perf']:
             r = s['rate'] if s.get('rate') else s.get('perf_assumed')
             assume.append(f"연 예상 성과 피 = 예상 귀속 GMV {won(s['attr'])}원 × {r:g}%" + ('' if s.get('rate') else ' (비율은 협의 전 가정값)'))
@@ -518,10 +562,20 @@ def xlsx_values(s, docno):
     return v, notes
 
 
-def build_xlsx(s, docno, path):
+def build_xlsx(s, docno, path, drop=(), over=None, extra_notes=None):
+    # drop: 일부러 비워 둘 입력 칸(값 누락 시험), over: 값을 덮어쓸 칸, extra_notes: 비고 칸에 덧붙일 말
     v, notes = xlsx_values(s, docno)
+    for k in drop: v.pop(k, None)
+    v.update(over or {}); notes.update(extra_notes or {})
     jp = os.path.join(TMP, 'x.json')
-    io.open(jp, 'w', encoding='utf-8').write(json.dumps({'vals': v, 'notes': notes}, ensure_ascii=False))
+    # 계산 칸의 결과 (엑셀이 다시 계산하는 값과 같다) — 파일에 함께 저장한다
+    calc = dict(gmv=s['gmv'], refund=s['refund'], net=s['net'], cogs=s['cogs_amt'], fee=s['fee_amt'], ship=s['ship_amt'], retlog=s['retlog'], mk=s['mk'], cp=s['cp'], real=s['real'], nominal=s['nominal'])
+    if s['kind'] == 'influencer':
+        calc.update(perf=s['perf'] or 0, cp2=s['cp2'], roas2=s['real2'])
+    else:
+        calc.update(perf=0, cp2=s['cp'], roas2=s['cp'] / s['mk'])
+    if drop: calc = {}  # 입력 칸이 비어 있으면 계산 결과도 저장하지 않는다 (엑셀이 열 때 다시 계산)
+    io.open(jp, 'w', encoding='utf-8').write(json.dumps({'vals': v, 'notes': notes, 'calc': calc}, ensure_ascii=False))
     env = dict(os.environ, XLSX_OUT=path, XLSX_JSON=jp)
     r = subprocess.run([sys.executable, os.path.join(HERE, 'xlsx_form.py')], env=env, capture_output=True, text=True, encoding='utf-8')
     if r.returncode: raise RuntimeError(r.stderr)
@@ -534,50 +588,70 @@ def dday(x):
 
 
 def write_index(rows):
-    # ── 제출값.csv: 안건 제출 화면에 그대로 옮겨 적는 값 (추계서의 숫자와 같다)
-    head = ['안건', '폴더', '분류', '분류ID', '작성일', '계약 체결 기한', '지급 예정일', '현 계약 만료일', '계약 방식', '요청금액', '고정 피', '연(건) 예상 성과 피', '성과 피 비율(%)',
-            'GMV', '환불', '제품 원가', '채널 수수료', '출고비', '반품 물류비', '마케팅 지출', '공헌이익(계산)', '기대 승인권자', '기대 이유', '시험 상황']
+    # ── 제출값.csv: 안건 제출 화면에 옮겨 적는 값 (GMV·환불·원가·수수료·출고비·반품 물류비는 추계서의 계산 결과와 같다)
+    head = ['안건', '폴더', '분류', '구분', '분류ID', '작성일', '계약 체결 기한', '지급 예정일', '현 계약 만료일', '계약 방식', '요청금액', '고정 피', '연(건) 예상 성과 피', '성과 피 비율(%)',
+            'GMV', '환불', '제품 원가', '채널 수수료', '출고비', '반품 물류비',
+            '마케팅 지출(추계서 3번)', '공헌이익(추계서 4번 · 고정·성과 피 제외)', '고정·성과 피 반영 공헌이익(추계서 5번 · 자체 정의)', '앱 제출화면 공헌이익(요청금액을 마케팅 지출로 뺌)',
+            '기대 승인권자', '기대 이유', '시험 상황', '기존 계약서(첨부)']
     out = [head]
     for s in rows:
-        out.append([s['tid'], s['folder'], '캠페인 집행' if s['kind'] == 'campaign' else '인플루언서 전속계약', s['ref'], ymd(s['doc']), ymd(s['deadline']), ymd(s.get('pay')), ymd(s.get('expiry')) if s.get('expiry') else '',
+        # 앱 제출 화면은 요청금액 전체를 마케팅 지출로 빼서 계산한다 (캠페인은 같은 값, 전속계약은 고정 피·성과 피가 함께 빠진다)
+        form_cp = s['cp'] + s['mk'] - s['R']
+        out.append([s['tid'], s['folder'], '캠페인 집행' if s['kind'] == 'campaign' else '인플루언서 전속계약', s['deal'] if s['kind'] == 'campaign' else s['renew'], s['ref'], ymd(s['doc']), ymd(s['deadline']), ymd(s.get('pay')), ymd(s.get('expiry')) if s.get('expiry') else '',
                     s['fee_type'], s['R'], s['fixed'], s['perf'] if s['perf'] is not None else '', f"{s['rate']:g}" if s.get('rate') else '',
-                    s['gmv'], s['refund'], s['cogs_amt'], s['fee_amt'], s['ship_amt'], s['retlog'], s['R'], s['cp'] - (s['R'] - s['mk']), s['approver'], s['approver_why'], s['scenario']])
+                    s['gmv'], s['refund'], s['cogs_amt'], s['fee_amt'], s['ship_amt'], s['retlog'], s['mk'], s['cp'], s['cp2'], form_cp, s['approver'], s['approver_why'], s['scenario'], ('04_기존계약서 ' + s['existing']) if s.get('existing') else '없음 (신규 — 기존 계약서 칸 없음)'])
     with io.open(os.path.join(OUT, '제출값.csv'), 'w', encoding='utf-8-sig', newline='') as f:
         csv.writer(f).writerows(out)
     # ── README.md
     n_c = sum(1 for s in rows if s['kind'] == 'campaign')
-    L = ['# 채운 문서 (합성 안건 24건)', '',
-         '`합성데이터/빈양식`의 빈 양식을 같은 구성으로 채운 **가상 서류**예요. 안건마다 기안서(PDF 1쪽) · 비용편익추계서(엑셀) · 표준계약서(PDF) 3종이 들어 있고, 기안 제출 화면에 그대로 올려 볼 수 있어요.',
+    L = [f'# 채운 문서 (합성 안건 {len(rows)}건)', '',
+         '`합성데이터/빈양식`의 빈 양식을 같은 구성으로 채운 **가상 서류**예요. 안건마다 기안서(워드 docx) · 비용편익추계서(엑셀) · 표준계약서(워드 docx)가 들어 있고, 전속계약 **갱신**·캠페인 **확대** 안건에는 **기존(현행) 계약서**(`04_…`)가 더 있어요.',
+         '- `03_표준계약서_…` 는 이번 건으로 **새로 맺을 계약서**예요 (계약 담당 단계에서 만들어지는 문서에 가까워서, 기안 접수 화면의 "기존 계약서" 칸에 올리는 서류가 아니에요).',
+         '- `04_기존계약서_…docx` 는 **이미 맺어 둔 현행 계약서**예요. 전속계약 **갱신**(T15~T21·T24)은 직전 1년 기간·직전 계약번호(CT-INF-2025-…)이고, 캠페인 **확대**(T25~T30)는 확대 대상 캠페인의 기존 계약(CT-CMP-2025-…, 기간은 캠페인 마스터와 같아요)이에요. 기안 접수 화면의 **"기존 계약서"** 칸에 올려요. 신규(캠페인 신규 T01~T14, 전속 신규 T22·T23)는 기존 계약이 없어서 이 문서도, 올릴 칸도 없어요.',
+         '- **캠페인도 인플루언서처럼 구분이 있어요**: 신규(새 캠페인 ID, `CMP-0026`~) / 확대(이미 있는 캠페인 ID의 추가 집행). 기안서 "구분" 줄에 표시하고, 계약서(03)의 "계약 구분"과 확대 대상 기존 계약번호가 맞춰져 있어요. 확대의 03 계약서는 **추가하는 금액**만 적어요.',
          '값은 모두 지어낸 가상 값이지만 **원본 자료의 모양과 크기**를 따랐어요 (원본 데이터는 읽기만 했고 한 글자도 고치지 않았어요).', '',
+         '## 공헌이익은 어떻게 계산했나 (원본 정의 `calculation_definitions.md` 1.4 · 시맨틱 레이어와 같아요)', '',
+         '- **순매출** = GMV − 환불 (GMV는 쿠폰 반영 후·VAT 제외라서 쿠폰을 다시 빼지 않아요)',
+         '- **제품 원가** = 주문당 제품 원가(원가표 단가) × 주문 수, **채널 수수료** = GMV × 수수료율 — 환불돼도 원가·수수료는 회수하지 않아요 (원본 기본 가정)',
+         '- **출고비** = 주문당 출고비 × 주문 수, **반품 물류비** = 반품 건수 × 건당 물류비',
+         '- **공헌이익** = 순매출 − 제품 원가 − 채널 수수료 − 출고비 − 반품 물류비 − **마케팅 지출**',
+         '- **마케팅 지출**은 건별 지출(인플루언서 건별 진행비 + 퍼포먼스 광고비 + 오프라인)이에요. **연 전속 고정 피·성과 피는 공헌이익에 넣지 않아요.**', '',
+         '### 캠페인 추계서와 전속계약 추계서의 차이', '',
+         '| 구분 | 캠페인 집행 | 인플루언서 전속계약 |', '|---|---|---|',
+         '| 규모·기간 | 건별, 몇 개월 | 연 단위 |',
+         '| 마케팅 지출(3번) | 건별 진행비 = **요청금액** (= 계약서 건별 금액) | 연간 건별 진행비 + 퍼포먼스 광고비 — 원본 성과 집계의 광고비÷GMV 비율로 가정. 요청금액과 같지 않아요 |',
+         '| 연 전속 고정 피·성과 피 | 없음 (건별 금액에 이미 들어 있음) | **5번 구역**에 따로: 고정 피 + 연 예상 성과 피(귀속 GMV × 비율) = **요청금액** |',
+         '| 공헌이익 | 4번 (마케팅 지출까지) | 4번 = 원본 정의(고정·성과 피 제외), 5번 = 고정·성과 피까지 반영한 자체 정의(판단 보충용) |', '',
+         '> **앱 제출 화면과 다른 점**: 앱의 공헌이익 계산 칸은 요청금액 전체를 마케팅 지출로 빼요. 캠페인은 값이 같지만, 전속계약은 고정 피·성과 피가 함께 빠져서 `제출값.csv`의 "앱 제출화면 공헌이익"이 서류의 4번 값과 달라요 (앱 쪽을 같은 정의로 맞추는 일은 아직 하지 않았어요).', '',
          '## 어떻게 값을 정했나', '',
          '- **ID·이름**: `m_influencer_ms.csv` · `m_campaign_ms.csv`의 10명·25개 캠페인을 이어서 썼어요. 새 캠페인은 `CMP-0026`부터, 신규 인플루언서는 `INF-011`·`INF-012`예요.',
-         '- **비용률**: 제품 원가율 14~24%, 채널 수수료 4%(자사몰)·12~14%(마켓플레이스), 출고비 3,000~3,300원, 반품 물류비 3,500~4,100원 — `mkt_cost_master_ms.csv`의 범위예요.',
-         '- **반품률·광고비 효율**: 인플루언서별 실제 성과 집계(혜인 13.1%·광고비 비중 73%, 초혜핏 3.7%·15% …)에 가깝게 잡았어요. 같은 인플루언서의 기존 순위·광고비 비중·캠페인별 공헌이익은 성과 집계 값을 그대로 옮겼어요.',
+         '- **비용**: 주문당 제품 원가는 평균 주문금액의 14~24% 수준, 채널 수수료 4%(자사몰)·12~14%(마켓플레이스), 출고비 3,000~3,300원, 반품 물류비 3,500~4,100원 — `mkt_cost_master_ms.csv`의 범위예요.',
+         '- **반품률·광고비 효율**: 인플루언서별 실제 성과 집계(혜인 반품률 13.1%·광고비÷GMV 73%, 초혜핏 3.7%·15% …)에 가깝게 잡았어요. 같은 인플루언서의 기존 순위·광고비 비중·캠페인별 공헌이익은 성과 집계 값을 그대로 옮겼어요.',
          '- **낙관 추계 시험**: `T04`는 반품률을 6%로 낙관적으로 잡았어요 (실제 최근 13.1%). 원본 기안이 예상 GMV를 요청금액의 약 11배로 적는 것과 같은 함정이에요.',
          '- **승인 경로**: `approval_authority_policy.md` 기준이에요. 건당 1천만 원 이하 팀 전결 / 초과 또는 기안 총액 1억 초과 Masil 대표 + 그룹 보고 / 연 10억 초과 전속계약 CEO/이사회 / 지급일이 현금 하회 예상 구간 안이면 금액 불문 CEO/이사회 / 그룹 300억 대상 CEO/이사회.',
          '- **날짜**: 가상기업 기준일은 **2026-07-01**이고, 현금 하회 예상 구간은 **2026-07-21 ~ 2026-08-21**이에요. 작성일은 6/24~7/1 사이, 계약 체결 기한은 기준일 대비 **5일 지남 ~ 4개월 뒤**로 흩었어요. 경계값(구간 시작·마지막 날·직후, 정확히 1천만 원, 정확히 10억, 10억 + 1천만 원)을 일부러 넣었어요.',
-         '- **세 문서의 숫자는 같아요**: 요청금액 = 계약서 금액 = 추계서 마케팅 지출 합계 (예외: `T14`는 일부러 어긋나게 만든 시험용). 계약 방식·성과 피(귀속 GMV 기준, last-click 7일 고정)도 같아요.', '',
+         '- **서류 사이의 숫자**: 요청금액 = 계약서 금액이에요 (캠페인은 추계서 마케팅 지출 합계, 전속계약은 추계서 5번 구역의 고정 피 + 연 예상 성과 피와도 같아요). 예외: `T14`는 일부러 어긋나게 만든 시험용이에요. 계약 방식·성과 피(귀속 GMV 기준, last-click 7일 고정)도 같아요.', '',
          '## 안건 목록', '',
-         f'캠페인 집행 {n_c}건 (T01~T14) + 인플루언서 전속계약 {len(rows) - n_c}건 (T15~T24). 기대 승인권자는 위 규정을 사람이 풀어 본 값이에요 (앱이 계산한 값과 다르면 알려 주세요).', '',
-         '| 안건 | 대상 | 요청금액 | 계약 체결 기한 | 지급 예정일 | 공헌이익(추계) | 기대 승인권자 | 이 안건이 시험하는 것 |', '|---|---|---:|---|---|---:|---|---|']
+         f'캠페인 {n_c}건 (신규 T01~T14 · 확대 T25~T30) + 인플루언서 전속계약 {len(rows) - n_c}건 (T15~T24). 기대 승인권자는 위 규정을 사람이 풀어 본 값이에요 (앱이 계산한 값과 다르면 알려 주세요).', '',
+         '| 안건 | 대상 | 요청금액 | 계약 체결 기한 | 지급 예정일 | 공헌이익(추계) | 고정·성과 피 반영 | 기대 승인권자 | 이 안건이 시험하는 것 |', '|---|---|---:|---|---|---:|---:|---|---|']
+    sg = lambda v: ('−' if v < 0 else '') + won(abs(v))
     for s in rows:
-        cp = ('−' if s['cp'] < 0 else '') + won(abs(s['cp']))
-        what = s['cname'] if s['kind'] == 'campaign' else f"{s['iname']} 전속 {s['renew']}"
-        L.append(f"| [{s['tid']}]({s['folder']}) | {what} (`{s['ref']}`) | {won(s['R'])} | {ymd(s['deadline'])} ({dday(s['deadline'])}) | {ymd(s.get('pay'))} | {cp} | {s['approver']} | {s['scenario']} |")
+        what = f"{s['cname']} {s['deal']}" if s['kind'] == 'campaign' else f"{s['iname']} 전속 {s['renew']}"
+        L.append(f"| [{s['tid']}]({s['folder']}) | {what} (`{s['ref']}`) | {won(s['R'])} | {ymd(s['deadline'])} ({dday(s['deadline'])}) | {ymd(s.get('pay'))} | {sg(s['cp'])} | {sg(s['cp2']) if s['kind'] == 'influencer' else '—'} | {s['approver']} | {s['scenario']} |")
     L += ['', '## 쓰는 법', '',
           '1. 마케팅 팀원 계정으로 **기안 제출** 화면을 열어요.',
-          '2. 분류(캠페인 집행 / 인플루언서 전속계약)와 분류 ID를 고르거나 새로 적어요 (새 ID는 `CMP-0026`~·`INF-011`~).',
-          '3. `제출값.csv`의 해당 줄을 보고 날짜·금액·계약 방식·공헌이익 계산 칸(GMV·환불·제품 원가·채널 수수료·출고비·반품 물류비)을 채워요. 추계서(엑셀)의 노란 입력 칸과 같은 값이에요 (`T14`만 요청금액과 추계서 지출이 일부러 달라서, 제출 화면 값은 요청금액 기준으로 계산돼요).',
-          '4. 첨부는 **기안서**(`01_기안서.pdf`) · **비용 및 성과 추계서**(`02_비용편익추계서.xlsx`)가 필수이고, 계약서(`03_…pdf`)는 기존 계약서(선택)로 올려요.',
+          '2. 분류(캠페인 집행 / 인플루언서 전속계약)와 구분(캠페인 신규·확대 / 전속 신규·갱신)을 고르고 — 확대는 이미 있는 캠페인 ID(`CMP-0001`~`CMP-0025`)를 골라요 (T25~T30은 원본 확대 기안 PLAN-001·004·005·016·021·024와 같은 금액·기한·지급일이에요) — 첨부서류를 올린 뒤 **"AI 로 첨부서류 읽고 빈칸 채우기"**를 눌러도 되고, 직접 적어도 돼요 (새 ID는 `CMP-0026`~·`INF-011`~).',
+          '3. 직접 적을 때는 `제출값.csv`의 해당 줄을 보고 날짜·금액·계약 방식·공헌이익 계산 칸(GMV·환불·제품 원가·채널 수수료·출고비·반품 물류비)을 채워요. 추계서(엑셀)의 계산 결과와 같은 값이에요 (`T14`만 요청금액과 추계서 지출이 일부러 달라요).',
+          '4. 첨부는 **기안서**(`01_기안서.docx`) · **비용 및 성과 추계서**(`02_비용편익추계서.xlsx`)가 필수예요. 전속계약 갱신·캠페인 확대면 **기존 계약서**(`04_기존계약서_…docx`)도 올려요 (`03_…docx` 는 새로 맺을 계약서라 올리지 않아도 돼요).',
           '5. 이어서 팀장 → 재무팀 → 계약 담당 → 승인권자로 처리하면서 승인권자·경고·보완요청 흐름을 확인해요.', '',
           '## 알아 둘 것', '',
-          '- 엑셀은 열 때 수식이 다시 계산돼요(회색 칸). 원 미만은 반올림하도록 계산 칸 식에 `ROUND`를 넣어서 표시와 합계가 1원도 어긋나지 않아요 (빈 양식도 같은 식으로 맞췄어요).',
-          '- 인플루언서 전속계약 추계서는 고정 피·성과 피를 **마케팅 지출 합계에 이미 포함**시켰어요(요청금액과 같아야 하므로). 그래서 5번 구역(공헌이익에 포함되지 않는 비용)은 비워 뒀고, 근거는 추계서 맨 아래 "가정·한계"에 적었어요.',
+          '- 엑셀은 계산 결과가 파일에 저장돼 있고, 열 때 수식이 다시 계산돼요. 원 미만은 반올림하도록 계산 칸 식에 `ROUND`를 넣었어요 (빈 양식도 같은 식이에요).',
+          '- 워드 문서는 Word 가 아닌 도구로 만들어서 모양을 직접 확인하지 못했어요. 열어 보시고 어색한 곳이 있으면 알려 주세요.',
           '- `T09`(지급 예정일 미확인), `T12`(성과 피 비율·긴급배송·CS 미확인), `T15`(성과 피 비율·지급일 미확인)는 일부러 비워 둔 값이 있어요. 기안서 5항 "부족한 정보"에 올라가 있어요.',
           '- 계약서·기안서의 이름·계좌·사업자번호·주소는 모두 가상이에요. 실제 계약·실제 성과가 아니에요.', '',
           '## 다시 만들려면', '',
           '```bash', 'python 합성데이터/채운문서/_생성기/build_docs.py          # 전체', 'python 합성데이터/채운문서/_생성기/build_docs.py T04 T15   # 일부만', '```',
-          '값은 `_생성기/scenarios.py`에서 바꿔요 (Windows + Edge 필요).']
+          '값은 `_생성기/scenarios.py`에서 바꿔요. 엑셀의 계산 결과를 파일에 저장하려면 만든 뒤 Excel 에서 한 번 열어 저장해야 해요 (Windows + Excel 필요).']
     io.open(os.path.join(OUT, 'README.md'), 'w', encoding='utf-8').write('\n'.join(L) + '\n')
 
 
@@ -591,14 +665,35 @@ def main():
         fdir = os.path.join(OUT, s['folder'])
         os.makedirs(fdir, exist_ok=True)
         dmd, docno = draft_md(s)
-        pages_d = to_pdf(dmd, os.path.join(fdir, '01_기안서.pdf'), f"{s['tid']}_draft", onepage=True)
-        build_xlsx(s, docno, os.path.join(fdir, '02_비용편익추계서.xlsx'))
+        pages_d = to_docx(dmd, os.path.join(fdir, '01_기안서.docx'), f"{s['tid']} 기안서", onepage=True)
+        try:
+            build_xlsx(s, docno, os.path.join(fdir, '02_비용편익추계서.xlsx'))
+        except RuntimeError as e:
+            if 'PermissionError' not in str(e): raise
+            print(f"  ⚠ {s['tid']} 추계서(xlsx)가 다른 프로그램에서 열려 있어 새로 만들지 못했어요 — 닫고 `python build_docs.py {s['tid']}` 를 다시 실행하세요", flush=True)
         cmd, cno = (inf_contract_md(s) if s['kind'] == 'influencer' else cmp_contract_md(s))
-        cname = '03_표준계약서_인플루언서_전속계약.pdf' if s['kind'] == 'influencer' else '03_표준계약서_캠페인_계약.pdf'
-        pages_c = to_pdf(cmd, os.path.join(fdir, cname), f"{s['tid']}_contract")
+        cname = '03_표준계약서_인플루언서_전속계약.docx' if s['kind'] == 'influencer' else '03_표준계약서_캠페인_계약.docx'
+        pages_c = to_docx(cmd, os.path.join(fdir, cname), f"{s['tid']} 표준계약서")
+        if s['kind'] == 'influencer' and s['renew'] == '갱신':
+            # 기존(현행) 계약서: 현 계약 만료일에 끝나는 직전 1년 계약. 신규 안건에는 기존 계약서가 없다.
+            ex = dict(s, end=s['expiry'], start=s['expiry'].replace(year=s['expiry'].year - 1) + timedelta(days=1), renew='신규', expiry=None)
+            ex['doc'] = ex['start'] - timedelta(days=14)
+            if s.get('pay'): ex['pay'] = s['pay'].replace(year=s['pay'].year - 1)
+            exmd, _ = inf_contract_md(ex, ex=True)
+            to_docx(exmd, os.path.join(fdir, '04_기존계약서_인플루언서_전속계약.docx'), f"{s['tid']} 기존 계약서")
+            s['existing'] = f"{s['prev_no']} ({ymd(ex['start'])}~{ymd(ex['end'])})"
+        elif s['kind'] == 'campaign' and s['deal'] == '확대':
+            # 기존 캠페인 계약서: 확대 대상 캠페인을 처음 맺은 계약 (고정 피 건별 정액, 기존 기간·금액). 신규 캠페인에는 기존 계약서가 없다.
+            ex = dict(s, start=s['prev_start'], end=s['prev_end'], doc=s['prev_start'] - timedelta(days=14), deadline=s['prev_start'] - timedelta(days=5), pay=s['prev_start'],
+                      R=s['prev_amount'], fixed=s['prev_amount'], perf=0, rate=None, fee_type='고정 피', gmv=int(s['prev_amount'] * s['k'] / 1000) * 1000, deal='신규', mismatch=None)
+            exmd, _ = cmp_contract_md(ex, ex=True)
+            to_docx(exmd, os.path.join(fdir, '04_기존계약서_캠페인_계약.docx'), f"{s['tid']} 기존 계약서")
+            s['existing'] = f"{s['prev_no']} ({ymd(s['prev_start'])}~{ymd(s['prev_end'])})"
+        else:
+            s['existing'] = ''
         s['pages'] = (pages_d, pages_c)
         rows.append(s)
-        print(s['tid'], s['folder'], '기안서', pages_d, '쪽 · 계약서', pages_c, '쪽 · 요청', won(s['R']), '공헌이익', won(s['cp']), s['approver'], flush=True)
+        print(s['tid'], s['folder'], '요청', won(s['R']), '공헌이익', won(s['cp']), '(고정·성과 피 반영', won(s['cp2']) + ')', s['approver'], flush=True)
     if not only: write_index(rows)
     io.open(os.path.join(TMP, 'rows.json'), 'w', encoding='utf-8').write(json.dumps([{k: (str(v) if isinstance(v, date) else v) for k, v in r.items() if k not in ('inf',)} for r in rows], ensure_ascii=False, default=str))
     return rows

@@ -5,7 +5,7 @@ import { assignDrafts } from '@/lib/app/drafts'
 import { EngineError, openCase, type EngineConfig } from '@/lib/engine/engine'
 import { fmtWon } from '@/lib/app/format'
 import { DEAL_TYPES, campaignNumber, nextCampaignName, uniqueTitle } from '@/lib/app/submission-title'
-import { calcContribution, validateContribution, CONTRIBUTION_FIELDS, type ContributionInput } from '@/lib/metrics/contribution-calc'
+import { calcContributionIfComplete, missingContribution, validateContribution, CONTRIBUTION_FIELDS, type PartialContribution } from '@/lib/metrics/contribution-calc'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
 import { receiveContractNotice } from '@/lib/modules/w02/intake'
@@ -17,7 +17,9 @@ export type { CategoryId }
 export interface FieldDef {
   name: string
   label: string
-  type: 'text' | 'number' | 'date'
+  type: 'text' | 'number' | 'date' | 'choice'
+  /** type 이 choice 일 때 고를 수 있는 값 */
+  options?: string[]
   required?: boolean
   placeholder?: string
 }
@@ -42,6 +44,11 @@ const COMMON_FIELDS = (settleLabel: string, deadlineLabel: string, amountLabel: 
   { name: 'requested', label: amountLabel, type: 'number', required: true, placeholder: '예: 30,000,000' },
 ]
 
+/** 신규 계약은 아직 현 계약이 없어 받지 않는 칸 */
+const NO_CURRENT_CONTRACT = ['currentExpiry', 'autoRenew']
+/** 현 계약의 자동 갱신 여부 선택지 */
+export const AUTO_RENEW_OPTIONS = ['자동 갱신', '자동 갱신 아님']
+
 export const CATEGORIES: Category[] = [
   {
     id: 'influencer', label: CATEGORY_LABEL.influencer, refLabel: '인플루언서 ID', idRule: 'INF-nnn', idPattern: /^INF-\d{3}$/,
@@ -50,6 +57,8 @@ export const CATEGORIES: Category[] = [
       // 요청금액은 계약 방식에 따라 입력한 고정 피·성과 피 금액의 합으로 정해진다
       ...COMMON_FIELDS('지급 예정일 (고정 피)', '계약 체결 기한 (갱신 통보 기한)', '').filter((f) => f.name !== 'requested'),
       { name: 'currentExpiry', label: '현 계약 만료일', type: 'date', required: true },
+      // 자동 갱신 계약이면 통보 기한을 놓치는 순간 동일 조건으로 갱신된다 — 할 일에서 도래 시기를 마케팅팀에 알려 주는 기준
+      { name: 'autoRenew', label: '자동 갱신 여부', type: 'choice', options: AUTO_RENEW_OPTIONS, required: true },
     ],
   },
   {
@@ -59,6 +68,8 @@ export const CATEGORIES: Category[] = [
   },
 ]
 
+/** 현 계약의 자동 갱신 여부 선택지 */
+
 export const categoryById = (id: string) => CATEGORIES.find((c) => c.id === id)
 
 /** 인플루언서 계약 방식 — 고정 피 / 성과 피 / 혼합 피 */
@@ -67,16 +78,21 @@ export type FeeType = (typeof FEE_TYPES)[number]
 /** 계약 방식에 따라 입력해야 하는 금액 */
 export const feeNeeds = (t: string) => ({ fixed: t === '고정 피' || t === '혼합 피', performance: t === '성과 피' || t === '혼합 피' })
 
-/** 첨부서류 종류. required 는 없으면 제출할 수 없다. requiredFor 는 그 분류에서만 필수다. */
-export const ATTACHMENT_KINDS: { id: string; label: string; required: boolean; requiredFor?: CategoryId[] }[] = [
+/** 첨부서류 종류. required 는 없으면 제출할 수 없다. requiredFor 는 그 분류에서만 필수다.
+ *  existingOnly 는 원본에 이미 있는 대상(갱신·확대)일 때만 받고 그때는 필수다 — 신규 ID 는 맺은 계약이 없어 이 칸 자체가 없다. */
+export const ATTACHMENT_KINDS: { id: string; label: string; required: boolean; requiredFor?: CategoryId[]; existingOnly?: boolean }[] = [
   { id: 'draft', label: '기안서', required: true },
   { id: 'estimate', label: '비용 및 성과 추계서', required: true },
-  // 아직 계약을 체결한 것이 아니고 본 계약서는 계약 담당이 만들기 때문에, 기존 계약서와 협의서는 없을 수 있다 (선택)
-  { id: 'contract', label: '기존 계약서', required: false },
+  // 갱신(인플루언서)·확대(캠페인)는 기존 계약서가 있어야 판단할 수 있어 필수다. 신규 ID 는 기존 계약이 없으니 칸을 없앤다.
+  // 확정 계약서(상대방에게 보낼 것)는 승인 뒤에 계약 담당이 만들기 때문에 여기서 받지 않는다.
+  { id: 'contract', label: '기존 계약서', required: false, existingOnly: true },
   { id: 'consult', label: '협의서 (메일, 공문 등)', required: false },
 ]
-/** 이 분류에서 꼭 첨부해야 하는 종류 */
-export const requiredKinds = (category: string) => ATTACHMENT_KINDS.filter((k) => k.required || k.requiredFor?.includes(category as CategoryId))
+/** 이 분류에서 꼭 첨부해야 하는 종류. isNew: 원본에 없는 신규 ID 로 올리는 경우 */
+export const requiredKinds = (category: string, isNew = false) =>
+  ATTACHMENT_KINDS.filter((k) => k.required || k.requiredFor?.includes(category as CategoryId) || (k.existingOnly && !isNew))
+/** 이 경우에 받을 수 있는 첨부 종류 (신규 ID 는 기존 계약서 칸이 없다) */
+export const kindsFor = (isNew = false) => ATTACHMENT_KINDS.filter((k) => !(k.existingOnly && isNew))
 
 /** 그 밖의 첨부 — 종류 이름을 제출하는 사람이 직접 적는다 (예: 예상 GMV, 주문기록 …). 여러 개 가능 */
 export const CUSTOM_KIND = 'custom'
@@ -86,8 +102,8 @@ export const MAX_FILE_BYTES = 8 * 1024 * 1024
 export const MAX_FILES = 12
 
 /** 팀장이 접수하기 전에 하나씩 확인해야 하는 항목. 첨부서류는 파일마다 따로 확인한다(id `file:<파일번호>`). 모두 확인해야 접수할 수 있다 (서버도 다시 확인한다). */
-export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'new' }[] = [
-  { id: 'terms', label: '기존 계약서가 첨부된 경우, 성과 피 정산 조건과 고정 피 금액이 표시돼 있다 (첨부가 없으면 없다는 사실을 확인했다)', only: 'influencer' },
+export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'new' | 'existing' }[] = [
+  { id: 'terms', label: '기존 계약서에 계약 조건(기간·고정 피·성과 피 정산 조건·해지/위약금)이 표시돼 있고, 이번 기안과 맞는다', only: 'existing' },
   { id: 'ref', label: '분류 ID가 맞고, 안건 내용이 그 대상(인플루언서·캠페인)에 대한 것이다' },
   { id: 'newref', label: '신규 ID: 전사 ID 규칙에 맞고, 이름(·소속 인플루언서)이 맞으며, 기존 ID와 겹치지 않는다', only: 'new' },
   { id: 'deadline', label: '계약 체결 기한을 확인했고, 남은 기간 안에 승인까지 끝낼 수 있다' },
@@ -100,7 +116,7 @@ export const ACCEPT_CHECKS: { id: string; label: string; only?: CategoryId | 'ne
 /** isNew: 원본에 없는 신규 ID 로 제출한 경우 신규 ID 확인 항목이 더해진다 */
 /** 첨부파일 하나를 확인했다는 체크 id */
 export const fileCheckId = (fileId: number) => `file:${fileId}`
-export const checksFor = (category: CategoryId, isNew = false) => ACCEPT_CHECKS.filter((c) => !c.only || c.only === category || (c.only === 'new' && isNew))
+export const checksFor = (category: CategoryId, isNew = false) => ACCEPT_CHECKS.filter((c) => !c.only || c.only === category || (c.only === 'new' && isNew) || (c.only === 'existing' && !isNew))
 
 export interface SubmissionRow {
   id: number
@@ -157,8 +173,9 @@ const isDate = (s: string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Dat
 const CONTRIB_KEYS = CONTRIBUTION_FIELDS.map((f) => f.key)
 
 /** 제출한 칸에서 공헌이익 입력(원 단위)을 만든다 */
-export function contributionFromInput(input: Record<string, string>): ContributionInput {
-  const n = (k: string) => Math.round(Number(input[k] ?? 0))
+export function contributionFromInput(input: Record<string, string>): PartialContribution {
+  // 비어 있는 칸은 0 이 아니라 null 이다 (모르는 값을 0 원으로 계산하지 않는다)
+  const n = (k: string) => { const raw = (input[k] ?? '').toString().trim(); return raw === '' || !Number.isFinite(Number(raw)) ? null : Math.round(Number(raw)) }
   return {
     gmv: n('gmv'), refund: n('refund'), cogs: n('cogs'), channelFee: n('channelFee'), shipping: n('shipping'), returnLogistics: n('returnLogistics'),
     marketingSpend: n('requested'),
@@ -190,7 +207,7 @@ export function missingRequired(category: string, v: Record<string, string>, fil
   if (cat.id === 'campaign' && isNew && v.productLine !== undefined && !v.productLine.trim()) out.push('제품 종류')
   for (const f of cat.fields) {
     // 신규 계약(새 인플루언서이거나 구분이 "신규")은 아직 현 계약이 없다
-    if (f.name === 'currentExpiry' && (isNew || v.dealType === '신규')) continue
+    if (NO_CURRENT_CONTRACT.includes(f.name) && (isNew || v.dealType === '신규')) continue
     if (f.required && !(v[f.name] ?? '').trim()) out.push(f.label)
   }
   if (cat.id === 'influencer') {
@@ -202,7 +219,8 @@ export function missingRequired(category: string, v: Record<string, string>, fil
     }
   }
   if (CONTRIB_KEYS.some((k) => !(v[k] ?? '').trim())) out.push('공헌이익 계산 칸')
-  for (const k of requiredKinds(cat.id)) if (!fileKinds.includes(k.id)) out.push(`첨부: ${k.label}`)
+  // 구분이 "신규"면 기존 계약서가 없다 (새 ID 이거나, 신규로 올리는 경우)
+  for (const k of requiredKinds(cat.id, isNew || v.dealType === '신규')) if (!fileKinds.includes(k.id)) out.push(`첨부: ${k.label}`)
   return out
 }
 
@@ -224,9 +242,10 @@ export async function submitIntake(
   const v: Record<string, string> = { dealType: deal }
   for (const f of cat.fields) {
     // 신규 계약은 아직 계약이 없어 현 계약 만료일이 없다
-    if (f.name === 'currentExpiry' && (isNew || deal === '신규')) { v.currentExpiry = ''; continue }
+    if (NO_CURRENT_CONTRACT.includes(f.name) && (isNew || deal === '신규')) { v[f.name] = ''; continue }
     const val = (input.values[f.name] ?? '').trim().replace(f.type === 'number' ? /,/g : /^$/, '')
     if (f.required && !val && !inc) throw new EngineError(`${f.label} 을(를) 입력해 주세요`)
+    if (val && f.type === 'choice' && !(f.options ?? []).includes(val)) throw new EngineError(`${f.label} 은(는) ${(f.options ?? []).join(' / ')} 중에서 골라 주세요`)
     if (val && f.type === 'date' && !isDate(val)) throw new EngineError(`${f.label} 은(는) YYYY-MM-DD 형식으로 입력해 주세요`)
     if (val && f.type === 'number' && !(Number.isInteger(Number(val)) && Number(val) > 0)) throw new EngineError(`${f.label} 은(는) 0보다 큰 정수(원)여야 해요`)
     v[f.name] = val
@@ -268,7 +287,8 @@ export async function submitIntake(
 
   // 첨부
   if (input.files.length > MAX_FILES) throw new EngineError(`첨부파일은 ${MAX_FILES}개까지 올릴 수 있어요`)
-  for (const k of requiredKinds(cat.id)) {
+  if (isNew && input.files.some((f) => f.kind === 'contract')) throw new EngineError('신규 ID 는 기존 계약이 없어서 기존 계약서를 첨부할 수 없어요')
+  for (const k of requiredKinds(cat.id, isNew || deal === '신규')) {
     if (!input.files.some((f) => f.kind === k.id) && !inc) throw new EngineError(`${k.label} 을(를) 첨부해 주세요`)
   }
   for (const f of input.files) {
@@ -387,11 +407,11 @@ export async function acceptSubmission(
 
   const v = s.input
   const contrib = contributionFromInput(v)
-  const result = calcContribution(contrib)
+  const result = calcContributionIfComplete(contrib) // 비어 있는 칸이 있으면 null — 공헌이익을 계산하지 않는다
   const submission = {
     id: s.id, submittedBy: s.submittedBy, category: s.category, refId: s.refId, submittedAt: s.createdAt,
     newRef: v.isNewRef === '1' ? { id: s.refId, name: v.refName, parentInfluencerId: v.parentInfluencerId ?? null, origin: '사용자입력(원본에 없는 신규 ID)' } : null,
-    calc: { inputs: contrib, result, origin: '가정(추계)' },
+    calc: { inputs: contrib, result, missing: missingContribution(contrib), origin: '가정(추계)' },
     checklist: { by, at: new Date().toISOString(), items: [...need.map((c) => c.label), ...files.map((f) => `첨부서류 확인: ${f.label ?? f.filename}${f.label ? ` (${f.filename})` : ''}`)] },
     memo: v.memo ?? '',
   }
@@ -400,7 +420,7 @@ export async function acceptSubmission(
     res = await receiveContractNotice(sql, cfg, {
       influencerId: s.refId, annualFixedFeeKrw: Math.round(Number(v.requested)), notifyDeadline: v.contractDeadline,
       feeType: v.feeType || undefined, fixedFeeKrw: v.fixedFee ? Number(v.fixedFee) : undefined, performanceFeeKrw: v.performanceFee ? Number(v.performanceFee) : undefined, performanceRate: v.performanceRate ? Number(v.performanceRate) : undefined,
-      currentExpiry: v.currentExpiry || null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
+      currentExpiry: v.currentExpiry || null, autoRenew: v.autoRenew ? v.autoRenew === '자동 갱신' : null, fixedFeePaymentDate: v.settlementDate || null, note: v.memo ?? '',
       newInfluencerName: v.isNewRef === '1' ? v.refName : undefined,
     }, by)
     // 새 방식으로 제출된 건은 제출 때 자동 생성한 제목을 안건 제목으로 쓴다

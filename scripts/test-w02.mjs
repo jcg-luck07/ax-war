@@ -228,6 +228,8 @@ try {
     await E.decide(sql, cfg, ap1.id, { outcome: 'approved', byRole: 'ceo_board', byName: '강세연' })
     await assert.rejects(() => reportRevision(sql, cfg, { caseId: a, newAmount: 2_800_000_000, reason: '', files: [], by: '마케팅' }), /원래 금액과 같아요/)
     const r1 = await reportRevision(sql, cfg, { caseId: a, newAmount: 2_940_000_000, reason: '고정 피 5% 인상', files: [file], by: '마케팅' }) // 정확히 +5%
+    // 5% 이내(다시 평가하지 않음)여도 안건 목록의 요청금액이 수정 금액으로 바뀐다
+    assert.equal((await (await import('@/lib/app/case-list')).loadCaseRows(sql)).find((r) => r.id === a).amount, 2_940_000_000)
     assert.equal(r1.route, 'direct')
     let v = await view(a)
     assert.equal(v.case.status, 'pending_approval'); assert.equal(v.case.payload.facts.annual_contract_value_krw, 2_940_000_000)
@@ -263,6 +265,33 @@ try {
     v = await view(b)
     assert.deepEqual(v.case.payload.revisions.map((x) => [x.fromAmount, x.toAmount]), [[800_000_000, 1_200_000_000], [1_200_000_000, 1_230_000_000]])
     assert.equal(v.case.payload.originalAmount, 800_000_000)
+    // 금액은 그대로이고 계약 조건만 바뀐 경우: 사유가 있으면 보고할 수 있다 (변동 0% → 승인권자에게 바로)
+    await prep(b)
+    await E.decide(sql, cfg, (await view(b)).approvals.filter((x) => x.status === 'pending')[0].id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
+    const r4 = await reportRevision(sql, cfg, { caseId: b, newAmount: 1_230_000_000, reason: '지급 예정일이 변경되었어요', files: [], by: '계약 담당' })
+    assert.equal(r4.route, 'direct'); assert.equal(r4.pct, 0)
+    // 안건 목록·상세가 읽는 금액도 수정 금액이다 (5% 이내라 다시 평가하지 않아도 마지막 평가 값에 옛 금액이 남지 않는다)
+    const { loadCaseRows } = await import('@/lib/app/case-list')
+    const rowB = (await loadCaseRows(sql)).find((r) => r.id === b)
+    assert.equal(rowB.amount, (await view(b)).case.payload.facts.annual_contract_value_krw, '목록의 요청금액 = 현재(수정된) 금액')
+    assert.equal((await view(b)).case.payload.evaluation.facts.annual_contract_value_krw, (await view(b)).case.payload.facts.annual_contract_value_krw, '마지막 평가 값도 같은 금액')
+    // 수정 보고하면 저장된 추계(공헌이익)와 계약 방식별 금액도 새 금액으로 다시 계산된다 — 수익성 검증·AI 판단이 바뀐 금액을 쓰게 하려는 것
+    const inputs = { gmv: 5_000_000_000, refund: 100_000_000, cogs: 700_000_000, channelFee: 300_000_000, shipping: 50_000_000, returnLogistics: 20_000_000, marketingSpend: 1_230_000_000 }
+    const { calcContribution } = await import('@/lib/metrics/contribution-calc')
+    await sql`UPDATE decision_cases SET payload = payload || ${sql.json({ submission: { calc: { inputs, result: calcContribution(inputs), origin: '가정(추계)' } }, contract: { feeType: '혼합 피', fixedFeeKrw: 1_000_000_000, performanceFeeKrw: 230_000_000, performanceRate: 5 } })} WHERE id = ${b}`
+    await prep(b)
+    await E.decide(sql, cfg, (await view(b)).approvals.filter((x) => x.status === 'pending')[0].id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
+    await reportRevision(sql, cfg, { caseId: b, newAmount: 1_300_000_000, reason: '', files: [], by: '마케팅' })
+    const p5 = (await view(b)).case.payload
+    assert.equal(p5.submission.calc.inputs.marketingSpend, 1_300_000_000); assert.equal(p5.submission.calc.inputs.gmv, 5_000_000_000, '다른 입력은 그대로')
+    assert.equal(p5.submission.calc.result.contributionProfit, calcContribution(inputs).contributionProfit - 70_000_000, '지출이 7천만 원 늘면 공헌이익이 그만큼 줄어든다')
+    assert.equal(p5.submission.calcOriginal.inputs.marketingSpend, 1_230_000_000, '원래 계산값은 남는다')
+    assert.equal(p5.contract.fixedFeeKrw, 1_070_000_000); assert.equal(p5.contract.performanceFeeKrw, 230_000_000, '혼합 피: 성과 피는 두고 고정 피만 바뀐다')
+    await prep(b)
+    await E.decide(sql, cfg, (await view(b)).approvals.filter((x) => x.status === 'pending')[0].id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '한지우' })
+    // 최종 종결된 안건은 수정 보고할 수 없다
+    await sql`UPDATE decision_cases SET status = 'closed' WHERE id = ${b}`
+    await assert.rejects(() => reportRevision(sql, cfg, { caseId: b, newAmount: 1_000_000_000, reason: '', files: [], by: '마케팅' }), /종결된 안건/)
     // 결정이 나지 않은 안건은 수정 보고할 수 없다
     const d = (await mk('INF-007', 700_000_000, '2026-08-13')).caseId
     await assert.rejects(() => reportRevision(sql, cfg, { caseId: d, newAmount: 710_000_000, reason: '', files: [], by: '마케팅' }), /승인 또는 부결이 난 안건만/)

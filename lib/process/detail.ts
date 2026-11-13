@@ -113,7 +113,8 @@ export function buildNodeDetails(def: FlowDef, state: FlowState, view: CaseView,
         if (pkg.missing.length) place({ heading: '원본에 없어 확인되지 않은 것', lines: pkg.missing })
         break
       }
-      case 'decision': {
+      case 'decision':
+      case 'decision2': {
         const lines = view.approvals.map(
           (a) => `${ctx.roleLabel(a.requiredRole)} · ${APPROVAL_STATUS[a.status] ?? a.status}${a.decidedBy ? ` · ${a.decidedBy} (${a.decidedAt ? ctx.fmtTime(a.decidedAt) : ''})` : ''}${a.comment ? ` — ${a.comment}` : ''}`,
         )

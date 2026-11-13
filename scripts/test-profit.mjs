@@ -100,6 +100,34 @@ try {
     assert.match(JUDGMENT_PROMPT, /절대 수익성/)
   })
 
+  await t('수정 보고: 바뀐 금액으로 다시 만든 수익성 값과 수정 이력이 AI 입력에 들어가 입력(해시)이 달라진다 — 수정 보고가 없으면 입력에 금액 칸이 없다', async () => {
+    const { hashJudgmentInput } = await import('@/lib/modules/w02/ai-store')
+    const mk = (spend, amount) => {
+      const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-2', estimate: { cp: 1000 - spend, netRevenue: 2000, gmv: 2200, spend, refund: 200 } })
+      return buildJudgmentInput({ profitability: d, perf, subject: { influencerId: 'INF-001', campaignId: 'CMP-2' }, allocation: null, amount, fees: {} })
+    }
+    const before = mk(500, null), none = mk(500, { currentKrw: 500, originalKrw: 500, revisions: [] })
+    assert.equal('amount' in before.caseInfo, false); assert.equal(hashJudgmentInput(before), hashJudgmentInput(none), '수정 보고가 없으면 입력이 그대로다 (저장된 판단을 계속 쓴다)')
+    const after = mk(400, { currentKrw: 400, originalKrw: 500, revisions: [{ no: 1, fromKrw: 500, toKrw: 400, pct: -0.2, reason: '라이브 1회 축소' }] })
+    assert.equal(after.caseInfo.amount.currentKrw, 400); assert.notEqual(hashJudgmentInput(before), hashJudgmentInput(after))
+    assert.match(JUDGMENT_PROMPT, /caseInfo\.amount/)
+  })
+  await t('빈 칸은 0원이 아니라 "계산 불가": 비어 있는 칸이 있으면 공헌이익을 계산하지 않고, 비교·AI 판단에서 빼며, 무엇이 비었는지 알려 준다', async () => {
+    const { calcContributionIfComplete, missingContribution } = await import('@/lib/metrics/contribution-calc')
+    const { contributionFromInput } = await import('@/lib/modules/intake/submissions')
+    const part = contributionFromInput({ returnLogistics: '52500', requested: '5500000', gmv: '' })
+    assert.equal(part.gmv, null); assert.equal(part.cogs, null); assert.equal(part.returnLogistics, 52_500); assert.equal(part.marketingSpend, 5_500_000)
+    assert.equal(calcContributionIfComplete(part), null); assert.deepEqual(missingContribution(part).slice(0, 2), ['예상 GMV', '예상 반품 환불액'])
+    const zero = contributionFromInput({ gmv: '0', refund: '0', cogs: '0', channelFee: '0', shipping: '0', returnLogistics: '0', requested: '100' })
+    assert.equal(calcContributionIfComplete(zero).contributionProfit, -100, '0 원으로 적은 칸은 진짜 0 원이라 계산한다')
+    // 기존 실적이 없는 대상: 제출 추계서가 비어 있어 계산 못 하면 "자료 누락" — AI 에게 묻지 않고 보완 요청으로 이어진다
+    const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-9', campaignId: 'CMP-NEW', estimate: null, estimateMissing: ['예상 GMV', '제품 원가'] })
+    assert.equal(d.basis, null); assert.equal(d.missing.length, 1); assert.match(d.missing[0], /예상 GMV, 제품 원가/)
+    // 기존 실적이 있는 대상: 실적 값은 그대로 쓰고, 제출 추정 값은 쓰지 않으며, 빠진 칸을 알려 준다
+    const e = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-2', estimate: null, estimateMissing: ['예상 GMV'] })
+    assert.equal(e.basis, '기존 실적'); assert.deepEqual(e.estimateMissing, ['예상 GMV']); assert.equal(e.missing.length, 0)
+  })
+
   await t('자료 누락: 기존 실적도 제출 추계서도 없으면 누락 사유를 돌려준다 (이때는 AI 에게 묻지 않는다)', () => {
     const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-NEW' })
     assert.equal(d.basis, null); assert.ok(d.missing.length > 0)

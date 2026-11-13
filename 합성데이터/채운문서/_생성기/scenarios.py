@@ -24,6 +24,11 @@ PREV = {
     'INF-010': dict(rank=3, share=3.2, cp=31553596, camps=[('CMP-0024', 14177133), ('CMP-0025', 17376463)]),
 }
 
+
+# 광고비 ÷ GMV — 원본 성과 집계(mkt_ad_spend 의 ad_cost 전액 ÷ GMV)에서 가져온 인플루언서별 비율. 전속계약 추계서의 "건별 마케팅 지출"을 GMV 에서 정할 때 쓴다.
+# (신규 INF-011·012 는 기존 실적이 없어 비슷한 규모의 인플루언서 값으로 가정)
+AD_RATIO = {'INF-001': 0.734, 'INF-002': 0.150, 'INF-003': 0.467, 'INF-004': 0.249, 'INF-005': 0.758, 'INF-006': 0.249, 'INF-007': 0.447, 'INF-008': 0.241, 'INF-009': 0.153, 'INF-010': 0.297, 'INF-011': 0.400, 'INF-012': 0.300}
+
 # ───────── 인플루언서 프로필 (가상). 신규 INF-011·012 는 마스터에 아직 없는 새 인물
 INF = {
     'INF-001': dict(name='혜인', real='서혜인', birth=(1995, 3, 12), country='국내', platform='YouTube', followers='구독자 3,200,000명', biz='개인사업자', bizno='000-00-10011', agency='블루포레스트 엔터(가상)', tier='대형'),
@@ -55,6 +60,7 @@ SC = []
 
 
 def camp(tid, **kw):
+    kw.setdefault('deal', '신규')  # 구분: 신규(새 캠페인 ID) / 확대(이미 있는 캠페인의 추가 집행)
     kw.update(tid=tid, kind='campaign')
     SC.append(kw)
 
@@ -236,3 +242,48 @@ contract('T24', ref='INF-002', infl='INF-002', renew='갱신', writer=1, doc=d(2
          consequence='8/10까지 통보하지 않으면 동일 조건으로 자동 갱신이에요.', alt='성과 피 비율 6% → 7%로 인상하는 대신 전속 범위 확대 제안',
          risk='성과가 좋은데 배분이 적어 오히려 확대 여지가 있음', missing=[('없음', '-', None, '-')],
          fee_fixed_year='', exclusive='색조·선케어', penalty=0, auto_renew=True, bundle=None)
+
+# ─────────────────── 캠페인 확대 (이미 있는 캠페인 ID — 원본 확대 기안 PLAN-001~025 와 같은 모양) ───────────────────
+# 확대는 기존 캠페인 계약서가 있다: prev_no 직전 계약번호 · prev_start/prev_end 기존 캠페인 기간(m_campaign_ms) · prev_amount 기존 계약금액(가상)
+camp('T25', deal='확대', ref='CMP-0003', infl='INF-001', cname='혜인 기초 캠페인3', line='기초', channel='라이브', fmt='YouTube 숏츠', writer=0, doc=d(2026, 6, 24),
+     start=d(2026, 7, 27), end=d(2026, 12, 31), deadline=d(2026, 7, 17), pay=d(2026, 7, 27), R=18_962_703, k=11.25, aov=125_000, retrate=0.131, cogs=0.14, fee=0.12, ship=3_000, retunit=3_700,
+     fee_type='고정 피', g300='대상 아님', bundle=('마케팅팀 캠페인 확대 기안1', 180_803_272),
+     prev_no='CT-CMP-2025-003', prev_start=d(2025, 12, 30), prev_end=d(2026, 6, 30), prev_amount=17_500_000,
+     scenario='확대: 지급일(7/27)이 하회 구간 안 → 금액 불문 CEO/이사회. 기존 실적은 최하위(혜인) — 같은 날(7/17) 전속계약 갱신 통보 기한도 도래', purpose='혜인 기초 캠페인3(2026-06-30 종료)의 라이브 판매 성과가 나쁘지 않아 같은 구성으로 추가 집행을 요청해요.',
+     consequence='7/17 이후에는 계약 확정기한이 지나 자동 확정되어 철회할 수 없어요.', alt='금액 축소(1천만 원) 시 라이브 횟수가 줄어요. 전속계약 갱신 여부와 함께 판단 필요.', risk='기존 캠페인 3건 모두 공헌이익 음수(혜인 10위) — 확대 근거가 약함, 반품률 13.1%',
+     missing=[('반품률 개선 계획 (최근 13.1%)', '마케팅', d(2026, 7, 6), '회신 대기')])
+
+camp('T26', deal='확대', ref='CMP-0009', infl='INF-003', cname='토모카 기초 캠페인3', line='기초', channel='마켓플레이스', fmt='Instagram 피드 (일본)', writer=1, doc=d(2026, 6, 25),
+     start=d(2026, 8, 28), end=d(2027, 1, 31), deadline=d(2026, 7, 17), pay=d(2026, 8, 28), R=10_180_328, k=11.25, aov=103_000, retrate=0.095, cogs=0.15, fee=0.14, ship=3_300, retunit=4_100,
+     fee_type='고정 피', g300='대상 아님', bundle=('마케팅팀 캠페인 확대 기안1', 180_803_272),
+     prev_no='CT-CMP-2025-009', prev_start=d(2025, 12, 30), prev_end=d(2026, 6, 30), prev_amount=9_800_000,
+     scenario='확대: 요청금액 10,180,328원 — 1천만 원을 조금 넘어(경계 직후) Masil 대표 + 그룹 보고, 지급일 구간 밖', purpose='토모카 기초 캠페인3 확대 요청이에요. 성과가 좋은 일본 마켓플레이스 판매를 이어가요.',
+     consequence='7/17 이후 자동 확정이에요.', alt='1천만 원으로 줄이면 팀 전결이지만 콘텐츠가 1편 줄어요.', risk='일본 환율, 반품률 9.5%', missing=[('없음', '-', None, '-')])
+
+camp('T27', deal='확대', ref='CMP-0004', infl='INF-002', cname='초혜핏 선케어 캠페인1', line='선케어', channel='자사몰', fmt='Instagram 피드', writer=2, doc=d(2026, 6, 29),
+     start=d(2026, 7, 21), end=d(2026, 12, 31), deadline=d(2026, 9, 11), pay=d(2026, 7, 21), R=4_378_322, k=9.17, aov=84_000, retrate=0.040, cogs=0.20, fee=0.04, ship=3_100, retunit=3_800,
+     fee_type='고정 피', g300='대상 아님', bundle=None,
+     prev_no='CT-CMP-2025-004', prev_start=d(2025, 1, 1), prev_end=d(2025, 7, 1), prev_amount=4_000_000,
+     scenario='확대: 소액이지만 지급일(7/21)이 하회 구간의 첫날 → CEO/이사회 (경계값). 마감은 먼 건(72일)', purpose='초혜핏 선케어 캠페인1(2025-07 종료)의 후속 확대예요. 공헌이익 1위 인플루언서라 소액 확대를 요청해요.',
+     consequence='9/11 이후 자동 확정이에요.', alt='지급일을 7/20 이전으로 앞당기면 구간 밖 — 인플루언서와 협의 필요', risk='지급일이 하회 구간 첫날', missing=[('지급 예정일 조정 가능 여부', '마케팅', d(2026, 7, 8), '회신 대기')])
+
+camp('T28', deal='확대', ref='CMP-0022', infl='INF-009', cname='보미 색조 캠페인1', line='색조', channel='자사몰', fmt='Instagram 릴스', writer=3, doc=d(2026, 6, 30),
+     start=d(2026, 8, 24), end=d(2026, 12, 31), deadline=d(2026, 9, 11), pay=d(2026, 8, 24), R=2_476_699, k=9.17, aov=82_000, retrate=0.025, cogs=0.22, fee=0.04, ship=3_000, retunit=3_500,
+     fee_type='고정 피', g300='대상 아님', bundle=None,
+     prev_no='CT-CMP-2025-022', prev_start=d(2025, 1, 1), prev_end=d(2025, 9, 30), prev_amount=2_300_000,
+     scenario='확대: 소액 · 지급일 구간 밖 · 단독 기안 → 마케팅팀 전결 (정상 경로)', purpose='보미 색조 캠페인1의 소액 확대예요. 반품률이 낮고 효율이 좋아 같은 구성으로 추가 집행해요.',
+     consequence='9/11 이후 자동 확정이에요.', alt='없음', risk='특이사항 없음', missing=[('없음', '-', None, '-')])
+
+camp('T29', deal='확대', ref='CMP-0014', infl='INF-005', cname='Ava Glow 선케어 캠페인3', line='선케어', channel='마켓플레이스', fmt='TikTok (미국)', writer=0, doc=d(2026, 6, 27),
+     start=d(2026, 9, 8), end=d(2027, 1, 31), deadline=d(2026, 7, 17), pay=d(2026, 9, 8), R=10_031_001, k=11.25, aov=108_000, retrate=0.120, cogs=0.14, fee=0.14, ship=3_300, retunit=4_100,
+     fee_type='고정 피', g300='대상 아님', bundle=('마케팅팀 캠페인 확대 기안1', 180_803_272),
+     prev_no='CT-CMP-2025-014', prev_start=d(2025, 12, 30), prev_end=d(2026, 6, 30), prev_amount=9_500_000,
+     scenario='확대: 기존 캠페인 공헌이익이 음수(−20.1백만 원)인데 확대 요청 — 부결·재검토 시험 (Masil 대표 + 그룹 보고)', purpose='Ava Glow 선케어 캠페인3 종료 직후 미국 가을 시즌 노출을 위해 확대를 요청해요.',
+     consequence='7/17 이후 자동 확정이에요.', alt='조건 변경(성과 피 전환) 또는 미진행', risk='기존 캠페인 3건 모두 공헌이익 음수, 광고비 비중 22.1%(2위)인데 성과 9위', missing=[('성과 피 전환 가능 여부 (에이전시 회신)', '마케팅', d(2026, 7, 15), '회신 대기')])
+
+camp('T30', deal='확대', ref='CMP-0025', infl='INF-010', cname='코코라운지 기초 캠페인2', line='기초', channel='자사몰', fmt='YouTube 숏츠', writer=1, doc=d(2026, 6, 29),
+     start=d(2026, 8, 10), end=d(2026, 12, 31), deadline=d(2026, 8, 14), pay=d(2026, 8, 10), R=5_228_580, k=10.42, aov=76_000, retrate=0.055, cogs=0.22, fee=0.04, ship=3_000, retunit=3_900,
+     fee_type='고정 피', g300='대상 아님', bundle=None,
+     prev_no='CT-CMP-2025-025', prev_start=d(2025, 9, 30), prev_end=d(2026, 6, 30), prev_amount=5_000_000,
+     scenario='확대: 소액이지만 지급일(8/10)이 하회 구간 안 → 금액 불문 CEO/이사회', purpose='코코라운지 기초 캠페인2(3위 성과)의 확대 요청이에요. 8월 초 시작을 원해요.',
+     consequence='8/14 이후 자동 확정이에요.', alt='지급일을 8/24 이후로 늦추면 구간 밖이라 팀 전결 가능 — 협의 필요', risk='하회 구간 안 현금 유출', missing=[('지급 예정일을 8/24 이후로 조정 가능한지', '마케팅', d(2026, 7, 8), '회신 대기')])

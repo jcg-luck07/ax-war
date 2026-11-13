@@ -9,7 +9,6 @@ import {
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
-import { importExpansionPlans } from '@/lib/modules/w02/intake'
 import { contractRefer, financeRefer, requestNonrenewalApproval, requestRework } from '@/lib/modules/w02/handoff'
 import { beyondGroupFundPeriod } from '@/lib/modules/w02/group-fund'
 import { outflowDate } from '@/lib/modules/w02/handlers'
@@ -20,6 +19,8 @@ import type { Sql } from 'postgres'
 import { runClaudeJudgment } from '@/lib/modules/w02/ai-claude'
 import type { Judgment } from '@/lib/modules/w02/ai-judgment'
 import type { JudgmentInput } from '@/lib/modules/w02/judgment-input'
+import { getSavedJudgment, hashJudgmentInput, saveJudgment } from '@/lib/modules/w02/ai-store'
+import { addCandidate, changeCandidates, confirmCandidates, removeCandidates, type CandidateKind, type CandidateParams } from '@/lib/modules/w02/candidates'
 
 export interface ActionResult {
   ok: boolean
@@ -49,11 +50,11 @@ const needRole = (user: AppUser) => {
 // ───────── AI 판단 (Claude API) ─────────
 
 export type AiJudgmentActionResult =
-  | { ok: true; judgment: Judgment; model: string; inputTokens: number; outputTokens: number }
+  | { ok: true; judgment: Judgment; model: string; inputTokens: number; outputTokens: number; createdAt: string; inputHash: string; reused: boolean }
   | { ok: false; message: string }
 
 /** 수익성 검증의 AI 판단을 Claude 에게 묻는다. 버튼을 눌렀을 때만 부른다 (호출마다 비용이 든다). */
-export async function runAiJudgmentAction(input: JudgmentInput): Promise<AiJudgmentActionResult> {
+export async function runAiJudgmentAction(caseId: number, input: JudgmentInput, force = false): Promise<AiJudgmentActionResult> {
   try {
     const { sql } = await getEngine()
     const user = await currentUser(sql)
@@ -62,11 +63,67 @@ export async function runAiJudgmentAction(input: JudgmentInput): Promise<AiJudgm
     // 화면이 보낸 입력의 모양과 크기를 확인한다 (엉뚱한 내용이나 너무 큰 내용으로 비용이 나가지 않도록)
     if (!input || typeof input !== 'object' || !input.caseInfo || !input.profitability || !input.company) return { ok: false, message: '판단에 필요한 자료가 없어요. 화면을 새로고침해 주세요.' }
     if (JSON.stringify(input).length > 300_000) return { ok: false, message: '입력이 너무 커요.' }
+    if (!Number.isInteger(caseId) || caseId <= 0) return { ok: false, message: '안건을 찾을 수 없어요.' }
+    // 판단 자료가 그대로이면 저장된 판단을 그대로 돌려준다 (API 를 다시 부르지 않는다). 자료가 바뀌었거나 '다시 묻기'면 새로 묻고 저장한다.
+    const inputHash = hashJudgmentInput(input)
+    const saved = await getSavedJudgment(sql, caseId)
+    if (saved && saved.inputHash === inputHash && !force) {
+      return { ok: true, judgment: saved.judgment, model: saved.model, inputTokens: saved.inputTokens, outputTokens: saved.outputTokens, createdAt: saved.createdAt, inputHash, reused: true }
+    }
     const r = await runClaudeJudgment(input)
-    return { ok: true, ...r }
+    // 자료가 없어 판단하지 않은 결과(missing)는 저장하지 않는다
+    if (r.judgment.status !== 'ok') return { ok: true, ...r, createdAt: new Date().toISOString(), inputHash, reused: false }
+    const s = await saveJudgment(sql, { caseId, inputHash, judgment: r.judgment, model: r.model, inputTokens: r.inputTokens, outputTokens: r.outputTokens })
+    return { ok: true, judgment: s.judgment, model: s.model, inputTokens: s.inputTokens, outputTokens: s.outputTokens, createdAt: s.createdAt, inputHash, reused: false }
   } catch (e) {
     return { ok: false, message: e instanceof Error ? e.message : String(e) }
   }
+}
+
+// ───────── 미확정(후보) 안건 ─────────
+// 회부·승인·부결·재검토를 바로 확정하지 않고 "후보"로 먼저 넣는다. 후보로 넣어도 안건 상태는 바뀌지 않는다.
+
+/** 안건 화면에서 "○○ 후보로 넣기" */
+export async function addCandidateAction(input: { caseId: number; kind: CandidateKind; params?: CandidateParams }) {
+  return guarded(async (user, sql) => {
+    needRole(user)
+    const r = await addCandidate(sql, user, { caseId: input.caseId, kind: input.kind, params: input.params ?? {} })
+    const label = ({ proceed: '회부', rework: '보완요청', approve: '승인', reject: '부결', hold: '재검토' } as const)[input.kind]
+    return `${label} 후보로 넣었어요${r.target ? ` (${r.target})` : ''}. 안건 목록 위쪽의 미확정 안건에서 확정할 수 있어요.`
+  })
+}
+
+/** 후보에서 빼기 */
+export async function removeCandidateAction(input: { caseIds: number[] }) {
+  return guarded(async (user, sql) => {
+    needRole(user)
+    const n = await removeCandidates(sql, input.caseIds.filter((x) => Number.isInteger(x)))
+    return `${n}건을 후보에서 뺐어요.`
+  })
+}
+
+const summarize = (verb: string, res: { caseId: number; ok: boolean; message: string }[]) => {
+  const ok = res.filter((r) => r.ok).length
+  const bad = res.filter((r) => !r.ok)
+  if (ok === 0) throw new EngineError(`${verb}하지 못했어요: ${bad.slice(0, 3).map((b) => `안건 ${b.caseId} — ${b.message}`).join(' / ')}`)
+  return `${ok}건을 ${verb}했어요.${bad.length > 0 ? ` ${bad.length}건은 처리하지 못했어요: ${bad.slice(0, 3).map((b) => `안건 ${b.caseId} — ${b.message}`).join(' / ')}${bad.length > 3 ? ' 외' : ''}` : ''}`
+}
+
+/** 미확정 목록에서 체크한 안건들을 한꺼번에 확정한다 (안건마다 권한·상태를 다시 확인한다) */
+export async function confirmCandidatesAction(input: { caseIds: number[] }) {
+  return guarded(async (user, sql) => {
+    needRole(user)
+    const { cfg } = await getEngine()
+    return summarize('확정', await confirmCandidates(sql, cfg, user, input.caseIds.filter((x) => Number.isInteger(x))))
+  })
+}
+
+/** 미확정 목록에서 체크한 안건들을 다른 후보로 바꾼다 */
+export async function changeCandidatesAction(input: { caseIds: number[]; kind: CandidateKind; params?: CandidateParams }) {
+  return guarded(async (user, sql) => {
+    needRole(user)
+    return summarize('다른 후보로 변경', await changeCandidates(sql, user, input.caseIds.filter((x) => Number.isInteger(x)), input.kind, input.params ?? {}))
+  })
 }
 
 // ───────── 결정 · 회신 · 작업 ─────────
@@ -187,15 +244,6 @@ export async function bulkReplyAction(input: { fact: string; answers: Record<str
 }
 
 // ───────── 안건 접수 ─────────
-
-export async function importPlansAction() {
-  return guarded(async (user, sql) => {
-    if (!canAcceptCategory(user, 'marketing_team')) throw new EngineError('마케팅 팀장 이상만 일괄 접수할 수 있어요.')
-    const { cfg } = await getEngine()
-    const r = await importExpansionPlans(sql, cfg, user.name)
-    return r.imported === 0 ? '새로 접수할 기안이 없어요.' : `확대 기안 ${r.imported}건을 접수했어요 (이미 접수된 ${r.skipped}건은 건너뜀).`
-  })
-}
 
 // 안건 제출(보고)은 파일 첨부가 있어 app/api/submissions 로 받는다. 접수·반려는 팀장(접수 권한자)이 한다.
 

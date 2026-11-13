@@ -13,7 +13,12 @@
   --radius-list-box: 2px; --radius-list-box-item: 2px;
 }
 main > div { max-width: none; padding-top: 12px; padding-bottom: 48px; padding-left: 16px; padding-right: 16px; }
-.card { padding: 8px 10px; gap: 6px; border-radius: 2px; box-shadow: none; border: 1px solid var(--border, #d4d4d8); }
+/* 상자 겉 테두리(사방을 두른 border)만 진하게 — 상자 안의 구분선(border-t·b·r)은 기본 옅은 색 그대로 둔다. 글자색을 섞어서 라이트·다크 모두 따라감 */
+:root { --line: color-mix(in oklab, var(--foreground) 38%, transparent); }
+.border.border-default { border-color: var(--line); }
+/* 가장 바깥 상자만 진하게: 다른 상자·카드 안에 들어 있는 상자는 기본 옅은 색으로 */
+.border.border-default .border.border-default, .card .border.border-default { border-color: var(--border); }
+.card { padding: 8px 10px; gap: 6px; border-radius: 2px; box-shadow: none; border: 1px solid var(--line); }
 .card__header { gap: 0; }
 .card__content { gap: 4px; }
 .chip { border-radius: 2px; }

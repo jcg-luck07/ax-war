@@ -64,6 +64,8 @@ export interface ContractNoticeInput {
   notifyDeadline: string
   /** 신규 인플루언서(첫 계약)는 현 계약이 없어 null */
   currentExpiry: string | null
+  /** 현 계약이 자동 갱신 계약인가 (모르면 비워 둔다) */
+  autoRenew?: boolean | null
   fixedFeePaymentDate: string | null
   note: string
   /** 그룹 300억 사업 연결 여부. 모르면 null(확인 요청) */
@@ -98,7 +100,7 @@ export async function receiveContractNotice(sql: Sql, cfg: EngineConfig, input: 
         linked_to_group_300: input.linkedToGroup300 ?? null,
       },
       contract: {
-        currentExpiry: input.currentExpiry, notifyDeadline: input.notifyDeadline, note: input.note,
+        currentExpiry: input.currentExpiry, autoRenew: input.autoRenew ?? null, notifyDeadline: input.notifyDeadline, note: input.note,
         ...(input.feeType ? { feeType: input.feeType, fixedFeeKrw: input.fixedFeeKrw ?? null, performanceFeeKrw: input.performanceFeeKrw ?? null, performanceRate: input.performanceRate ?? null } : {}),
       },
     },

@@ -1,5 +1,6 @@
 // 수정 보고 — 승인 또는 부결 뒤에 금액이 바뀐 안건을 다시 보고한다. 첨부(바뀐 계약서 등)가 있어 multipart 로 받는다.
-// 원래 안건의 부서(마케팅)만 보고할 수 있다.
+// 마케팅 부서(안건을 올린 쪽)와 계약 담당(계약 조건이 바뀌었음을 아는 쪽)이 보고할 수 있다.
+// 승인 뒤부터 최종 종결 전까지만 가능하다.
 import { NextResponse } from 'next/server'
 import { revalidatePath } from 'next/cache'
 import { getEngine, roleLabel } from '@/lib/app/engine'
@@ -14,7 +15,7 @@ export async function POST(req: Request) {
     const { sql, cfg } = await getEngine()
     const user = await currentUser(sql)
     if (!user.authenticated) return NextResponse.json({ ok: false, message: '로그인이 필요해요.' }, { status: 401 })
-    if (!canHandle(user, '마케팅')) return NextResponse.json({ ok: false, message: '수정 보고는 원래 안건을 올린 마케팅 부서만 할 수 있어요.' }, { status: 403 })
+    if (!canHandle(user, '마케팅') && !canHandle(user, '계약 담당')) return NextResponse.json({ ok: false, message: '수정 보고는 마케팅 부서나 계약 담당만 할 수 있어요.' }, { status: 403 })
     const form = await req.formData()
     const caseId = Number(form.get('caseId'))
     if (!Number.isInteger(caseId)) return NextResponse.json({ ok: false, message: '안건을 알 수 없어요' }, { status: 400 })

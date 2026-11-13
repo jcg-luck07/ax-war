@@ -11,6 +11,7 @@ export type NodeBind =
   | { t: 'accept' } // 기안 접수 — 팀장(접수 권한자)이 받음. 안건이 있다는 것 자체가 접수됐다는 뜻
   | { t: 'prep'; key: string; infoKeys?: string[] } // 승인 앞 단계 작업(detail.key) + 같은 부서에 온 확인 요청(detail.key 가 infoKeys 로 시작)
   | { t: 'decision' } // 승인권자의 결정 (마름모: 승인됐는가?)
+  | { t: 'decision2' } // 그룹 300억 배분 대상 안건에서 CEO/이사회가 부결해 대상에서 빠진 뒤, 일반 승인 규칙의 승인권자가 하는 재결정
   | { t: 'approval2'; branch: Outcome } // 부결 뒤 후속조치(계약 불연장 통지서)에 대한 승인권자의 두 번째 승인
   | { t: 'task'; key: string; branch: Outcome } // 결정 뒤 생기는 후속 작업(detail.key)
   | { t: 'end'; branch: Outcome }

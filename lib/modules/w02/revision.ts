@@ -8,6 +8,7 @@ import { EngineError, createTasks, getCaseView, logEvent, type EngineConfig } fr
 import { EXPANSION_CASE_TYPE } from './contract-notice'
 import { ALLOWED_EXT, MAX_CASE_FILE_BYTES } from './handoff'
 import { REVISION_THRESHOLD, revisionRoute } from '@/lib/app/revision-rule'
+import { calcContributionIfComplete, missingContribution, type PartialContribution } from '@/lib/metrics/contribution-calc'
 
 export { REVISION_THRESHOLD, revisionRoute }
 export const REVISION_KIND = 'revision'
@@ -44,7 +45,8 @@ export async function reportRevision(
   const c = view.case
   const mains = view.approvals.filter((a) => a.kind === 'main')
   const decided = mains.filter((a) => a.status === 'approved' || a.status === 'rejected')
-  if (!['approved', 'rejected', 'closed'].includes(c.status) || decided.length === 0) throw new EngineError('승인 또는 부결이 난 안건만 수정 보고할 수 있어요')
+  // 승인(또는 부결) 뒤부터 최종 종결 전까지만 — 후속 작업이 모두 끝나 종결된 안건은 수정 보고할 수 없다
+  if (!['approved', 'rejected'].includes(c.status) || decided.length === 0) throw new EngineError('승인 또는 부결이 난 안건만 수정 보고할 수 있어요 (후속 작업까지 끝나 종결된 안건은 할 수 없어요)')
   const key = amountKeyOf(c.caseType)
   const payload = c.payload as { facts?: Record<string, unknown>; plan?: Record<string, unknown>; originalAmount?: number; revisions?: RevisionRecord[]; authorityLock?: string }
   const facts = { ...(payload.facts ?? {}) }
@@ -52,7 +54,8 @@ export async function reportRevision(
   if (!(from > 0)) throw new EngineError('원래 금액을 알 수 없어요')
   const to = Math.round(input.newAmount)
   if (!Number.isInteger(to) || to <= 0) throw new EngineError('수정 금액은 0보다 큰 정수(원)로 입력해 주세요')
-  if (to === from) throw new EngineError('원래 금액과 같아요. 바뀐 금액을 입력해 주세요')
+  // 금액은 그대로이고 계약 조건(지급일·기간·위약금 등)만 바뀐 경우도 보고할 수 있다 — 이때는 바뀐 내용을 사유에 적어야 한다
+  if (to === from && !input.reason.trim()) throw new EngineError('원래 금액과 같아요. 바뀐 금액을 입력하거나, 금액은 같고 조건만 바뀌었다면 바뀐 내용을 사유에 적어 주세요')
   if (input.files.length > 5) throw new EngineError('수정 보고 첨부는 5개까지 올릴 수 있어요')
   for (const f of input.files) {
     const ext = f.filename.split('.').pop()?.toLowerCase() ?? ''
@@ -75,7 +78,25 @@ export async function reportRevision(
     if (typeof facts.draft_total_krw === 'number') facts.draft_total_krw = Math.max(0, Number(facts.draft_total_krw) + (to - from))
     if (plan) plan.requested_budget_krw = String(to)
   }
-  const next = { ...c.payload, facts, ...(plan ? { plan } : {}), originalAmount: payload.originalAmount ?? from, revisions: [...prior, record], authorityLock: approverRole }
+  // 바뀐 금액이 수익성 검증·AI 판단에도 반영되도록, 접수 때 저장해 둔 추계(공헌이익 계산)와 계약 방식별 금액도 새 금액으로 다시 계산한다.
+  //  · 마케팅 지출 = 요청금액이므로, 다른 입력(GMV·원가·수수료·반품 …)은 그대로 두고 지출만 바꿔 공헌이익을 다시 구한다 (원래 계산값은 calcOriginal 에 남긴다)
+  //  · 전속계약의 고정 피·성과 피: 고정 피 계약은 고정 피 = 새 금액, 성과 피 계약은 성과 피 = 새 금액, 혼합 피는 성과 피는 두고 고정 피 = 새 금액 − 성과 피
+  const extra = c.payload as { submission?: { calc?: { inputs?: PartialContribution; result?: unknown; origin?: string }; calcOriginal?: unknown }; contract?: Record<string, unknown> }
+  const submission = extra.submission?.calc?.inputs
+    ? { ...extra.submission, calcOriginal: extra.submission.calcOriginal ?? extra.submission.calc, calc: { ...extra.submission.calc, inputs: { ...extra.submission.calc.inputs, marketingSpend: to }, result: calcContributionIfComplete({ ...extra.submission.calc.inputs, marketingSpend: to }), missing: missingContribution({ ...extra.submission.calc.inputs, marketingSpend: to }) } }
+    : extra.submission
+  let contract = extra.contract
+  if (contract && typeof contract.feeType === 'string' && c.caseType !== EXPANSION_CASE_TYPE) {
+    const perfNow = Number(contract.performanceFeeKrw ?? 0)
+    if (contract.feeType === '성과 피') contract = { ...contract, performanceFeeKrw: to, fixedFeeKrw: null }
+    else if (contract.feeType === '혼합 피') contract = { ...contract, fixedFeeKrw: Math.max(0, to - perfNow), performanceFeeKrw: perfNow || null }
+    else contract = { ...contract, fixedFeeKrw: to, performanceFeeKrw: null }
+  }
+  // 마지막 평가 때 저장한 사실 목록(evaluation.facts)에도 새 금액을 넣는다 — 안건 목록·상세는 이 목록을 먼저 읽는데, 5% 이내 수정은 다시 평가하지 않아 옛 금액이 남기 때문이다.
+  // (판정 결과(승인권자)는 그대로 둔다 — 승인권자는 바뀌지 않는다)
+  const evaluation = (c.payload as { evaluation?: { facts?: Record<string, unknown> } }).evaluation
+  const evalFacts = evaluation?.facts ? { ...evaluation.facts, [key]: to, ...(typeof facts.draft_total_krw === 'number' && c.caseType === EXPANSION_CASE_TYPE ? { draft_total_krw: facts.draft_total_krw } : {}) } : undefined
+  const next = { ...c.payload, ...(evaluation && evalFacts ? { evaluation: { ...evaluation, facts: evalFacts } } : {}), facts, ...(plan ? { plan } : {}), ...(submission ? { submission } : {}), ...(contract ? { contract } : {}), originalAmount: payload.originalAmount ?? from, revisions: [...prior, record], authorityLock: approverRole }
 
   await sql.begin(async (tx) => {
     const t = tx as unknown as Sql

@@ -38,7 +38,7 @@ export function RevisionPanel({
   const [files, setFiles] = useState<File[]>([])
   const ref = useRef<HTMLInputElement>(null)
   const next = Number(amount)
-  const valid = Number.isInteger(next) && next > 0 && next !== currentAmount
+  const valid = Number.isInteger(next) && next > 0 && (next !== currentAmount || reason.trim().length > 0)
   const { pct, route } = valid ? revisionRoute(currentAmount, next) : { pct: 0, route: 'direct' as const }
 
   // 확인창은 전환(start) 밖에서 기다려야 해요. 전환 안에서 기다리면 확인창을 띄우는 상태 변경이 전환이 끝날 때까지 미뤄져 버튼이 멈춰요.

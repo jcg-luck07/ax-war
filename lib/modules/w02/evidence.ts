@@ -20,10 +20,11 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
   const c = view.case
   const payload = c.payload as {
     evaluation?: { decision?: AuthorityDecision; facts?: Record<string, unknown> }
+    facts?: Record<string, unknown>
     plan?: { requested_budget_krw?: string; settlement_date?: string; expected_gmv_krw?: string }
   }
   const d = payload.evaluation?.decision
-  const facts = (payload.evaluation?.facts ?? {}) as Record<string, unknown>
+  const facts = { ...(payload.evaluation?.facts ?? {}), ...(payload.facts ?? {}) } as Record<string, unknown> // 수정 보고로 바뀐 금액이 먼저
   const evidence: BriefInput['evidence'] = []
   const alternatives: string[] = []
   const caveats: string[] = []
@@ -155,7 +156,7 @@ export function financePackage(view: CaseView, ctx: EvidenceCtx): StepPackage {
 /** 계약 담당: 계약조건·기한 확인 단계 */
 export function contractPackage(view: CaseView, asOf: string): StepPackage {
   const c = view.case
-  const payload = c.payload as { contract?: { currentExpiry?: string; notifyDeadline?: string; note?: string }; plan?: Record<string, string | null> }
+  const payload = c.payload as { contract?: { currentExpiry?: string; autoRenew?: boolean | null; notifyDeadline?: string; note?: string }; plan?: Record<string, string | null> }
   const lines: string[] = []
   const missing: string[] = []
   const inf = c.subjectRefs.influencer
@@ -166,6 +167,7 @@ export function contractPackage(view: CaseView, asOf: string): StepPackage {
       ? `계약 체결 기한: ${k?.notifyDeadline ?? c.deadline ?? '미입력'} (${ddayLabel(c.deadline, asOf)}) — 신규 인플루언서라 현 계약·자동 갱신이 없고, 이 기한까지 계약을 맺어야 해요`
       : `통보 기한: ${k?.notifyDeadline ?? c.deadline ?? '미입력'} (${ddayLabel(c.deadline, asOf)}) — 넘기면 동일 조건 1년 자동 갱신, 체결로 간주`)
     if (k?.currentExpiry) lines.push(`현 계약 만료일: ${k.currentExpiry}`)
+    if (k?.currentExpiry) lines.push(`자동 갱신 여부: ${k.autoRenew === true ? '자동 갱신 계약 (통보 기한을 넘기면 갱신)' : k.autoRenew === false ? '자동 갱신 아님' : '미확인'}`)
     lines.push('승인권한: 연 10억 원 초과 전속계약은 CEO/이사회, 미통보 자동 갱신도 체결로 봄 — 00_common/approval_authority_policy.md')
   } else if (c.caseType === EXPANSION_CASE_TYPE) {
     const dl = payload.plan?.contract_deadline ?? c.deadline

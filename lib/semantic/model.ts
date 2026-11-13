@@ -224,7 +224,14 @@ export const MASIL_MODEL: SemanticModel = {
     },
     real_roas: {
       id: 'real_roas', label: '실질 ROAS', expr: 'contribution_profit / nullif(ad_spend, 0)', formula: '실질 공헌이익 / 마케팅 지출', unit: '배',
-      basis: '비용 범위: ad_cost_krw 전액, 같은 주문 집단·기간', sources: ['calculation_definitions.md 1.4', 'A05 5장'], origin: '원본 정의', caveats: [SAMPLE, '분모가 0 이면 계산 불가(비어 있음).'],
+      basis: '비용 범위: ad_cost_krw 전액, 같은 주문 집단·기간', sources: ['calculation_definitions.md 1.4', 'A05 5장'], origin: '원본 정의',
+      caveats: [
+        SAMPLE,
+        '분모가 0 이면 계산 불가(비어 있음).',
+        '[손익분기는 0배] 분자인 공헌이익이 이미 마케팅 지출을 뺀 값이라, 실질 ROAS 0배가 "공헌이익 0원(본전)"이다. 1배 미만이어도 0보다 크면 흑자이고, 0보다 작을 때만 적자다. 1배는 손익분기선이 아니다.',
+        '[일반 POAS 와의 차이] 흔히 쓰는 POAS 는 광고비를 빼기 전 이익 ÷ 광고비라서 1배가 손익분기다. 이 과제의 실질 ROAS 는 광고비를 뺀 뒤의 공헌이익 ÷ 마케팅 지출이므로 "일반 POAS = 실질 ROAS + 1" 관계다 (예: 실질 0.3배 = 일반 POAS 1.3배, 흑자). 두 값을 섞어 비교하지 않는다. 일반 POAS 는 보통 퍼포먼스 광고비만 분모로 쓰므로 이 환산은 마케팅 지출 전액을 분모로 쓸 때만 맞는다.',
+        '[명목 ROAS 와 비교] 명목 ROAS(GMV ÷ 마케팅 지출)는 쿠폰·반품·원가·수수료·물류비를 반영하기 전이라 대부분 1배를 넘는다. 실질로 바꾸면 크게 낮아지는 것이 정상이다.',
+      ],
     },
     return_rate: {
       id: 'return_rate', label: '반품률', expr: 'refund / nullif(gmv, 0)', formula: 'Σ 반품환불액 / Σ GMV (금액 기준, 건수 아님)', unit: '비율',

@@ -20,7 +20,7 @@ export interface CategoryView {
   allowed: boolean
   /** 접수 권한자 이름 (예: 마케팅 팀장) */
   acceptLabel: string
-  fields: { name: string; label: string; type: 'text' | 'number' | 'date'; required?: boolean; placeholder?: string }[]
+  fields: { name: string; label: string; type: 'text' | 'number' | 'date' | 'choice'; options?: string[]; required?: boolean; placeholder?: string }[]
   options: { id: string; label: string; name: string; product?: string }[]
   /** 신규 ID 로 넣을 때 제안하는 다음 번호 (예: INF-011) */
   nextId: string
@@ -45,6 +45,8 @@ export interface KindView {
   required: boolean
   /** 이 분류(예: influencer)에서만 필수 */
   requiredFor?: string[]
+  /** 원본에 이미 있는 대상(갱신·확대)일 때만 받고 그때는 필수 — 신규 ID 는 칸이 없다 */
+  existingOnly?: boolean
 }
 
 /** 숫자만 쳐도 YYYY-MM-DD 로 만들어 준다 (하이픈은 자동) */
@@ -56,13 +58,20 @@ const INPUT = 'rounded-input border border-default bg-content px-2 py-1 t-small 
 const fmtRoas = (r: number | null) => (r === null ? '계산 불가' : `${r.toFixed(2)}배`)
 
 /** 파일 선택 버튼 — 숨겨 둔 파일 입력을 버튼으로 연다. 여러 파일 선택 가능 */
+/** 파일 고르기 — 고를 때마다 목록에 더해지고, 잘못 올린 파일은 파일마다 있는 "삭제"로 뺄 수 있다 */
 function FilePick({ files, onChange }: { files: File[]; onChange: (f: File[]) => void }) {
   const ref = useRef<HTMLInputElement>(null)
   return (
-    <span className="flex min-w-0 items-center gap-2">
-      <input ref={ref} type="file" multiple hidden onChange={(e) => { onChange(Array.from(e.target.files ?? [])); e.target.value = '' }} />
+    <span className="flex min-w-0 flex-wrap items-center gap-2">
+      <input ref={ref} type="file" multiple hidden onChange={(e) => { onChange([...files, ...Array.from(e.target.files ?? [])]); e.target.value = '' }} />
       <Button size="sm" variant="secondary" className="shrink-0" onPress={() => ref.current?.click()}>파일 선택</Button>
-      <span className="t-caption min-w-0 truncate" title={files.map((f) => f.name).join(', ')}>{files.length > 0 ? files.map((f) => f.name).join(', ') : '선택된 파일 없음'}</span>
+      {files.length === 0 && <span className="t-caption">선택된 파일 없음</span>}
+      {files.map((f, i) => (
+        <span key={`${f.name}-${i}`} className="flex min-w-0 items-center gap-1 border border-default px-2 py-0.5 t-caption" style={{ borderRadius: 2 }}>
+          <span className="min-w-0 max-w-64 truncate" title={f.name}>{f.name}</span>
+          <button type="button" className="shrink-0 font-semibold text-danger underline" aria-label={`${f.name} 삭제`} onClick={() => onChange(files.filter((_, j) => j !== i))}>삭제</button>
+        </span>
+      ))}
     </span>
   )
 }
@@ -79,13 +88,21 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
   const [formKey, setFormKey] = useState(0)
   // 필수 항목을 채우지 않고 제출하기 — 켜면 비어 있어도 제출할 수 있고, 누를 때 한 번 더 묻는다
   const [allowInc, setAllowInc] = useState(false)
+  // 첨부문서를 AI 로 읽어 빈칸 채우기: 채운 칸(이름 → 어디서 읽었는지), 읽은 결과 안내
+  const [aiFilled, setAiFilled] = useState<Record<string, string>>({})
+  const [reading, setReading] = useState(false)
+  const [aiReport, setAiReport] = useState<{ filled: number; differs: { label: string; typed: string; doc: string }[]; warnings: string[]; skipped: string[]; tokens: string; model: string } | null>(null)
   const confirm = useConfirm()
   const cat = categories.find((c) => c.id === catId)
   const isNew = refId === NEW
   const newDigits = (vals.newId ?? '').replace(/\D/g, '').slice(0, cat?.idDigits ?? 4)
   const newIdFull = cat ? `${cat.idPrefix}${newDigits.padStart(cat.idDigits, '0')}` : ''
   const idTaken = Boolean(cat && isNew && newDigits && cat.takenIds.includes(newIdFull))
-  const set = (k: string) => (v: string) => setVals((s) => ({ ...s, [k]: v }))
+  // 직접 고친 칸은 더 이상 "AI 가 채움"이 아니다
+  const set = (k: string) => (v: string) => { setVals((s) => ({ ...s, [k]: v })); setAiFilled((a) => (k in a ? Object.fromEntries(Object.entries(a).filter(([x]) => x !== k)) : a)) }
+  /** AI 가 채운 칸은 테두리를 달리해 눈에 띄게 하고, 어디서 읽었는지 마우스를 올리면 보인다 */
+  const ai = (k: string) => (aiFilled[k] !== undefined ? ' border-primary bg-primary-soft' : '')
+  const aiTitle = (k: string) => (aiFilled[k] !== undefined ? `AI 가 읽은 곳: ${aiFilled[k] || '첨부서류'} — 꼭 확인하세요` : undefined)
 
   const contribKeys = CONTRIBUTION_FIELDS.map((f) => f.key)
   const calcRaw = Object.fromEntries(contribKeys.map((k) => [k, vals[k] ?? '']))
@@ -105,11 +122,16 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
 
   // 아직 남은 것 — 모두 채워야 제출할 수 있다
   const todo: string[] = []
-  const isRequired = (k: KindView) => k.required || Boolean(cat && k.requiredFor?.includes(cat.id))
+  const deal = isNew ? '신규' : (vals.dealType ?? '')
+  const dealChosen = Boolean(deal)
+  const isRequired = (k: KindView) => k.required || Boolean(cat && k.requiredFor?.includes(cat.id)) || Boolean(k.existingOnly && !noOld)
+  // 신규 ID 는 맺은 계약이 없어 '기존 계약서' 칸을 보여 주지 않는다
+  // 첨부서류는 구분(신규/갱신·확대)을 먼저 정해야 보인다 — 신규는 기존 계약서가 없어 그 칸이 빠진다
+  const noOld = isNew || deal === '신규'
+  const shownKinds = dealChosen ? kinds.filter((k) => !(k.existingOnly && noOld)) : []
   // 신규 인플루언서는 현 계약이 없어 '현 계약 만료일' 칸이 필요 없다
   // 구분: 새 ID 는 항상 "신규" (확대·갱신은 이미 있는 대상에 대해서만)
   const dealOptions = cat ? DEAL_TYPES[cat.id] ?? [] : []
-  const deal = isNew ? '신규' : (vals.dealType ?? '')
   const picked = cat?.options.find((o) => o.id === refId)
   const productLine = cat?.id === 'campaign' ? (isNew ? (vals.productLine ?? '') : (picked?.product ?? '')) : ''
   // 대상 이름: 새 캠페인은 "인플루언서 제품종류 캠페인N"(자동), 새 인플루언서는 적은 이름, 기존 대상은 원본 이름
@@ -121,7 +143,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
     ? uniqueTitle({ category: cat.id, name: targetName, deal, feeType: feeType || undefined, amountText: requestedStr ? `${Number(requestedStr).toLocaleString('ko-KR')}원` : '금액 미입력' }, cat.takenTitles)
     : ''
   // 신규 계약(새 인플루언서이거나 구분이 "신규")은 현 계약이 없어 '현 계약 만료일' 칸이 필요 없다
-  const visibleFields = (cat?.fields ?? []).filter((f) => !((isNew || deal === '신규') && f.name === 'currentExpiry'))
+  const visibleFields = (cat?.fields ?? []).filter((f) => !((isNew || deal === '신규') && (f.name === 'currentExpiry' || f.name === 'autoRenew')))
   if (cat) {
     if (!refId) todo.push(cat.refLabel)
     if (!deal) todo.push(DEAL_LABEL[cat.id])
@@ -139,7 +161,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
       if (needPerf && !(Number(vals.performanceFee) > 0)) todo.push('성과 피 금액')
     }
     if (calcError) todo.push('공헌이익 계산 칸')
-    for (const k of kinds) if (isRequired(k) && !(files[k.id]?.length)) todo.push(`첨부: ${k.label}`)
+    for (const k of shownKinds) if (isRequired(k) && !(files[k.id]?.length)) todo.push(`첨부: ${k.label}`)
     extras.forEach((x, i) => { if (!x.label.trim() || x.files.length === 0) todo.push(`추가 첨부 ${i + 1}: ${!x.label.trim() ? '종류 이름' : '파일'}`) })
   }
 
@@ -160,6 +182,75 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
     send(cat)
   }
 
+  const readDocs = async () => {
+    if (!cat) return
+    const fileCount = Object.entries(files).filter(([k]) => shownKinds.some((x) => x.id === k)).reduce((n, [, l]) => n + l.length, 0) + extras.reduce((n, x) => n + x.files.length, 0)
+    if (fileCount === 0) return
+    const ok = await confirm({
+      title: '첨부서류를 AI 로 읽을까요?',
+      description: `첨부한 서류 ${fileCount}개가 Claude API 로 전송돼 읽혀요. 호출마다 비용이 들고 수십 초 걸려요. 채워진 칸은 꼭 확인한 뒤 제출하세요. (이미 적은 칸은 덮어쓰지 않아요)`,
+      confirmLabel: '읽기',
+      cancelLabel: '취소',
+    })
+    if (!ok) return
+    const fd = new FormData()
+    fd.set('category', cat.id)
+    const shownIds = new Set(shownKinds.map((k) => k.id))
+    for (const [kind, list] of Object.entries(files)) if (shownIds.has(kind)) list.forEach((f, i) => fd.append(`f:${kind}#${i}`, f))
+    extras.forEach((x, i) => { fd.set(`cl:${i}`, x.label.trim()); x.files.forEach((f, j) => fd.append(`cf:${i}#${j}`, f)) })
+    setReading(true)
+    try {
+      const res = await fetch('/api/submissions/extract', { method: 'POST', body: fd })
+      const r = (await res.json()) as {
+        ok: boolean; message?: string; values?: Record<string, string>; evidence?: Record<string, string>; warnings?: string[]; skipped?: string[]; model?: string; inputTokens?: number; outputTokens?: number
+      }
+      if (!r.ok) { toast.danger(r.message ?? '서류를 읽지 못했어요.'); return }
+      applyExtracted(cat, r.values ?? {}, r.evidence ?? {})
+      setAiReport((prev) => ({ ...(prev ?? { filled: 0, differs: [], tokens: '', model: '' }), warnings: r.warnings ?? [], skipped: r.skipped ?? [], tokens: `입력 ${(r.inputTokens ?? 0).toLocaleString()} / 출력 ${(r.outputTokens ?? 0).toLocaleString()} 토큰`, model: r.model ?? '' }) as typeof aiReport)
+    } catch {
+      toast.danger('서류를 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.')
+    } finally {
+      setReading(false)
+    }
+  }
+
+  /** AI 가 뽑은 값을 빈칸에만 넣는다. 이미 적은 칸은 그대로 두고, 값이 다르면 안내만 한다. */
+  const applyExtracted = (c: NonNullable<typeof categories[number]>, v: Record<string, string>, evidence: Record<string, string>) => {
+    const next: Record<string, string> = {}
+    const marks: Record<string, string> = {}
+    const differs: { label: string; typed: string; doc: string }[] = []
+    const label = (k: string) => c.fields.find((f) => f.name === k)?.label ?? ({ feeType: '계약 방식', fixedFee: '고정 피 금액', performanceFee: '성과 피 금액', performanceRate: '성과 피 비율', gmv: '예상 GMV', refund: '환불', cogs: '제품 원가', channelFee: '채널 수수료', shipping: '출고(배송)비', returnLogistics: '반품 물류비', memo: '메모', dealType: DEAL_LABEL[c.id], productLine: '제품 종류' } as Record<string, string>)[k] ?? k
+    // 대상 ID: 아직 안 골랐으면 문서의 ID 로 고른다 (목록에 없으면 신규 ID 로)
+    let nowNew = isNew
+    if (!refId && v.refId) {
+      const known = c.options.some((o) => o.id === v.refId)
+      if (known) setRefId(v.refId)
+      else if (v.refId.startsWith(c.idPrefix)) {
+        setRefId(NEW); nowNew = true
+        next.newId = v.refId.slice(c.idPrefix.length).replace(/\D/g, '').slice(0, c.idDigits)
+        marks.newId = evidence.refId ?? ''
+        if (c.id === 'influencer' && v.refName && !(vals.refName ?? '').trim()) { next.refName = v.refName; marks.refName = evidence.refName ?? '' }
+        if (c.id === 'campaign') {
+          if (v.parentInfluencerId && !(vals.parentInfluencerId ?? '')) { next.parentInfluencerId = v.parentInfluencerId; marks.parentInfluencerId = evidence.parentInfluencerId ?? '' }
+          if (v.productLine && !(vals.productLine ?? '')) { next.productLine = v.productLine; marks.productLine = evidence.productLine ?? '' }
+        }
+      }
+      if (known || v.refId.startsWith(c.idPrefix)) marks.refId = evidence.refId ?? ''
+    }
+    const SIMPLE = ['settlementDate', 'contractDeadline', 'currentExpiry', 'autoRenew', 'requested', 'feeType', 'fixedFee', 'performanceFee', 'performanceRate', 'gmv', 'refund', 'cogs', 'channelFee', 'shipping', 'returnLogistics', 'memo', 'dealType']
+    for (const k of SIMPLE) {
+      const val = v[k]
+      if (val === undefined) continue
+      if (k === 'dealType' && nowNew) continue // 새 ID 는 항상 신규
+      const typed = (vals[k] ?? '').trim()
+      if (typed === '') { next[k] = val; marks[k] = evidence[k] ?? '' }
+      else if (typed.replace(/,/g, '') !== val) differs.push({ label: label(k), typed, doc: val })
+    }
+    setVals((s) => ({ ...s, ...next }))
+    setAiFilled((a) => ({ ...a, ...marks }))
+    setAiReport({ filled: Object.keys(marks).length, differs, warnings: [], skipped: [], tokens: '', model: '' })
+  }
+
   const send = (cat: NonNullable<typeof categories[number]>) =>
     start(async () => {
       const fd = new FormData()
@@ -171,14 +262,16 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
       if (deal) fd.set('v:dealType', deal)
       if (productLine) fd.set('v:productLine', productLine)
       if (cat.id === 'influencer') fd.set('v:requested', requestedStr)
-      for (const [kind, list] of Object.entries(files)) list.forEach((f, i) => fd.append(`f:${kind}#${i}`, f))
+      // 신규 ID 로 바꾸기 전에 올려 둔 기존 계약서는 보내지 않는다 (칸이 없어졌으므로)
+      const shown = new Set(shownKinds.map((k) => k.id))
+      for (const [kind, list] of Object.entries(files)) if (shown.has(kind)) list.forEach((f, i) => fd.append(`f:${kind}#${i}`, f))
       extras.forEach((x, i) => { fd.set(`cl:${i}`, x.label.trim()); x.files.forEach((f, j) => fd.append(`cf:${i}#${j}`, f)) })
       try {
         const res = await fetch('/api/submissions', { method: 'POST', body: fd })
         const r = (await res.json()) as { ok: boolean; message: string }
         if (r.ok) {
           toast.success(r.message)
-          setRefId(''); setVals({}); setFiles({}); setExtras([]); setAllowInc(false); setFormKey((x) => x + 1)
+          setRefId(''); setVals({}); setFiles({}); setExtras([]); setAllowInc(false); setAiFilled({}); setAiReport(null); setFormKey((x) => x + 1)
           router.refresh()
         } else toast.danger(r.message)
       } catch {
@@ -198,7 +291,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               role="radio"
               aria-checked={catId === c.id}
               disabled={!c.allowed}
-              onClick={() => { setCatId(c.id); setRefId(''); setVals({}); setFiles({}); setExtras([]); setFormKey((x) => x + 1) }}
+              onClick={() => { setCatId(c.id); setRefId(''); setVals({}); setFiles({}); setExtras([]); setAiFilled({}); setAiReport(null); setFormKey((x) => x + 1) }}
               className={`rounded-input border px-3 py-1.5 t-small ${catId === c.id ? 'border-primary bg-primary-soft font-semibold' : 'border-default'} ${c.allowed ? '' : 'opacity-50'}`}
             >
               {c.label}{c.allowed ? '' : ' (권한필요)'}
@@ -217,7 +310,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
             </label>
             <label className="flex flex-col gap-1 t-small">
               <span className="font-semibold">{cat.refLabel} <span className="t-caption">({cat.idRule}, 전사 ID 규칙)</span></span>
-              <select className={INPUT} value={refId} onChange={(e) => setRefId(e.target.value)}>
+              <select className={INPUT + ai('refId')} title={aiTitle('refId')} value={refId} onChange={(e) => { setRefId(e.target.value); setAiFilled((a) => ('refId' in a ? Object.fromEntries(Object.entries(a).filter(([x]) => x !== 'refId')) : a)) }}>
                 <option value="">{cat.refLabel}를 고르세요</option>
                 <option value={NEW}>➕ 신규 ID 입력 (원본에 없는 {cat.refLabel.replace(' ID', '')})</option>
                 {cat.options.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
@@ -229,20 +322,20 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                   <span className="font-semibold">신규 {cat.refLabel} * <span className="t-caption">(뒤 숫자만 입력, 제안: {cat.nextId.slice(cat.idPrefix.length)})</span></span>
                   <span className="flex items-stretch">
                     <span className={`${INPUT} w-auto bg-muted font-semibold`} style={{ borderRight: 0 }}>{cat.idPrefix}</span>
-                    <input className={INPUT} inputMode="numeric" maxLength={cat.idDigits} placeholder={'0'.repeat(cat.idDigits)} value={newDigits} onChange={(e) => set('newId')(e.target.value.replace(/\D/g, ''))} aria-label={`신규 ${cat.refLabel} 번호`} />
+                    <input className={INPUT + ai('newId')} title={aiTitle('newId')} inputMode="numeric" maxLength={cat.idDigits} placeholder={'0'.repeat(cat.idDigits)} value={newDigits} onChange={(e) => set('newId')(e.target.value.replace(/\D/g, ''))} aria-label={`신규 ${cat.refLabel} 번호`} />
                   </span>
                   {idTaken ? <span className="t-caption font-semibold text-danger" role="alert">이미 있는 분류ID입니다!</span> : newDigits && <span className="t-caption">등록될 ID: {newIdFull}</span>}
                 </label>
                 {cat.id === 'influencer' && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">신규 인플루언서 이름 *</span>
-                    <input className={INPUT} value={vals.refName ?? ''} onChange={(e) => set('refName')(e.target.value)} />
+                    <input className={INPUT + ai('refName')} title={aiTitle('refName')} value={vals.refName ?? ''} onChange={(e) => set('refName')(e.target.value)} />
                   </label>
                 )}
                 {cat.id === 'campaign' && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">소속 인플루언서 *</span>
-                    <select className={INPUT} value={vals.parentInfluencerId ?? ''} onChange={(e) => set('parentInfluencerId')(e.target.value)}>
+                    <select className={INPUT + ai('parentInfluencerId')} title={aiTitle('parentInfluencerId')} value={vals.parentInfluencerId ?? ''} onChange={(e) => set('parentInfluencerId')(e.target.value)}>
                       <option value="">고르세요</option>
                       {cat.parents.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
                       <option value="NONE">해당 없음 (NONE)</option>
@@ -264,7 +357,8 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                       aria-checked={deal === d}
                       disabled={off}
                       onClick={() => set('dealType')(d)}
-                      className={`rounded-input border px-3 py-1 t-small ${deal === d ? 'border-primary bg-primary-soft font-semibold' : 'border-default'} ${off ? 'opacity-50' : ''}`}
+                      title={aiTitle('dealType')}
+                      className={`rounded-input border px-3 py-1 t-small ${deal === d ? 'border-primary bg-primary-soft font-semibold' : 'border-default'} ${off ? 'opacity-50' : ''} ${deal === d && aiFilled.dealType !== undefined ? 'ring-2 ring-primary' : ''}`}
                     >
                       {d}
                     </button>
@@ -276,7 +370,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               <label className="flex flex-col gap-1 t-small">
                 <span className="font-semibold">제품 종류 *{!isNew && <span className="t-caption"> (기존 캠페인은 자동)</span>}</span>
                 {isNew ? (
-                  <select className={INPUT} value={vals.productLine ?? ''} onChange={(e) => set('productLine')(e.target.value)}>
+                  <select className={INPUT + ai('productLine')} title={aiTitle('productLine')} value={vals.productLine ?? ''} onChange={(e) => set('productLine')(e.target.value)}>
                     <option value="">제품 종류를 고르세요</option>
                     {cat.productLines.map((p) => <option key={p} value={p}>{p}</option>)}
                   </select>
@@ -287,22 +381,30 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
             )}
             {visibleFields.map((f) => (
               <label key={f.name} className="flex flex-col gap-1 t-small">
-                <span className="font-semibold">{f.label} *</span>
+                <span className="font-semibold">{f.label} *{f.name === 'autoRenew' && <span className="t-caption"> (통보 기한을 넘기면 동일 조건으로 갱신되는 계약인가요?)</span>}</span>
+                {f.type === 'choice' ? (
+                  <select className={INPUT + ai(f.name)} title={aiTitle(f.name)} value={vals[f.name] ?? ''} onChange={(e) => set(f.name)(e.target.value)}>
+                    <option value="">고르세요</option>
+                    {(f.options ?? []).map((o) => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                ) : (
                 <input
-                  className={INPUT}
+                  className={INPUT + ai(f.name)}
+                  title={aiTitle(f.name)}
                   inputMode={f.type === 'number' || f.type === 'date' ? 'numeric' : undefined}
                   maxLength={f.type === 'date' ? 10 : undefined}
                   placeholder={f.type === 'date' ? 'YYYY-MM-DD (숫자만 입력)' : f.placeholder}
                   value={f.type === 'number' ? formatMoneyInput(digitsOnly(vals[f.name] ?? '')) : (vals[f.name] ?? '')}
                   onChange={(e) => set(f.name)(f.type === 'date' ? formatDate(e.target.value) : f.type === 'number' ? digitsOnly(e.target.value) : e.target.value)}
                 />
+                )}
               </label>
             ))}
             {cat.id === 'influencer' && (
               <>
                 <label className="flex flex-col gap-1 t-small">
                   <span className="font-semibold">계약 방식 *</span>
-                  <select className={INPUT} value={feeType} onChange={(e) => set('feeType')(e.target.value)}>
+                  <select className={INPUT + ai('feeType')} title={aiTitle('feeType')} value={feeType} onChange={(e) => set('feeType')(e.target.value)}>
                     <option value="">계약 방식을 고르세요</option>
                     <option value="고정 피">고정 피</option>
                     <option value="성과 피">성과 피</option>
@@ -312,19 +414,19 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                 {needFixed && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">고정 피 금액 (연, 원) *</span>
-                    <input className={INPUT} inputMode="numeric" placeholder="예: 2,800,000,000" value={formatMoneyInput(digitsOnly(vals.fixedFee ?? ''))} onChange={(e) => set('fixedFee')(digitsOnly(e.target.value))} />
+                    <input className={INPUT + ai('fixedFee')} title={aiTitle('fixedFee')} inputMode="numeric" placeholder="예: 2,800,000,000" value={formatMoneyInput(digitsOnly(vals.fixedFee ?? ''))} onChange={(e) => set('fixedFee')(digitsOnly(e.target.value))} />
                   </label>
                 )}
                 {needPerf && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">성과 피 금액 (연 예상, 원) *</span>
-                    <input className={INPUT} inputMode="numeric" placeholder="예: 300,000,000" value={formatMoneyInput(digitsOnly(vals.performanceFee ?? ''))} onChange={(e) => set('performanceFee')(digitsOnly(e.target.value))} />
+                    <input className={INPUT + ai('performanceFee')} title={aiTitle('performanceFee')} inputMode="numeric" placeholder="예: 300,000,000" value={formatMoneyInput(digitsOnly(vals.performanceFee ?? ''))} onChange={(e) => set('performanceFee')(digitsOnly(e.target.value))} />
                   </label>
                 )}
                 {needPerf && (
                   <label className="flex flex-col gap-1 t-small">
                     <span className="font-semibold">성과 피 비율 (귀속 GMV 대비 %, 선택)</span>
-                    <input className={INPUT} inputMode="decimal" placeholder="예: 5" maxLength={6} value={vals.performanceRate ?? ''} onChange={(e) => set('performanceRate')(e.target.value.replace(/[^0-9.]/g, ''))} />
+                    <input className={INPUT + ai('performanceRate')} title={aiTitle('performanceRate')} inputMode="decimal" placeholder="예: 5" maxLength={6} value={vals.performanceRate ?? ''} onChange={(e) => set('performanceRate')(e.target.value.replace(/[^0-9.]/g, ''))} />
                   </label>
                 )}
                 {feeType && <div className="flex flex-col gap-1 t-small"><span className="font-semibold">요청금액 합계 <span className="t-caption">(자동)</span></span><div className={`${INPUT} bg-muted`}>{requestedStr ? fmtWon(Number(requestedStr)) : '금액을 입력하세요'}</div></div>}
@@ -332,14 +434,43 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
             )}
             <label className="flex flex-col gap-1 t-small sm:col-span-2 lg:col-span-3">
               <span className="font-semibold">메모</span>
-              <input className={INPUT} placeholder="팀장에게 전할 내용, 특이사항" value={vals.memo ?? ''} onChange={(e) => set('memo')(e.target.value)} />
+              <input className={INPUT + ai('memo')} title={aiTitle('memo')} placeholder="팀장에게 전할 내용, 특이사항" value={vals.memo ?? ''} onChange={(e) => set('memo')(e.target.value)} />
             </label>
           </div>
 
           <div className="flex flex-col gap-1 border-t border-default pt-2">
-            <span className="t-small font-semibold">첨부서류</span>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="t-small font-semibold">첨부서류</span>
+              <Button size="sm" variant="secondary" isDisabled={reading || pending || !dealChosen || !(Object.entries(files).some(([k, l]) => l.length > 0 && shownKinds.some((x) => x.id === k)) || extras.some((x) => x.files.length > 0))} onPress={readDocs}>
+                {reading ? '서류를 읽는 중… (수십 초 걸려요)' : 'AI 로 첨부서류 읽고 빈칸 채우기'}
+              </Button>
+              <span className="t-caption">기안서·추계서 등을 올린 뒤 누르면 비어 있는 칸을 채워요. 이미 적은 칸은 그대로 두고, 채운 칸은 파란 테두리로 보여요 — 꼭 확인하세요.</span>
+            </div>
+            {aiReport && (
+              <div className="flex flex-col gap-1 border border-primary p-2 t-small" style={{ borderRadius: 2 }} role="status">
+                <span><strong>AI 읽기 결과</strong> — {aiReport.filled}개 칸을 채웠어요{aiReport.tokens ? ` (${aiReport.model} · ${aiReport.tokens})` : ''}.</span>
+                {aiReport.differs.length > 0 && (
+                  <div>
+                    <span className="font-semibold">이미 적은 값과 서류의 값이 달라요 (적은 값을 그대로 뒀어요):</span>
+                    <ul className="list-disc pl-5">{aiReport.differs.map((d) => <li key={d.label}>{d.label}: 적은 값 {d.typed} · 서류 {d.doc}</li>)}</ul>
+                  </div>
+                )}
+                {aiReport.warnings.length > 0 && (
+                  <div>
+                    <span className="font-semibold text-danger">서류에서 의심스러운 점:</span>
+                    <ul className="list-disc pl-5">{aiReport.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>
+                  </div>
+                )}
+                {aiReport.skipped.length > 0 && <span className="t-caption">읽지 못한 파일(지원하지 않는 형식): {aiReport.skipped.join(', ')}</span>}
+              </div>
+            )}
+            {!dealChosen && (
+              <p className="border border-dashed border-default px-3 py-3 t-small text-muted" style={{ borderRadius: 2 }}>
+                위에서 <b>{cat ? DEAL_LABEL[cat.id] : '구분'}</b>(신규 / {cat?.id === 'influencer' ? '갱신' : '확대'})을 먼저 고르면 첨부서류 칸이 나와요. 구분에 따라 올릴 서류가 달라져요 (신규는 기존 계약서가 없어요).
+              </p>
+            )}
             <div className="flex flex-col">
-              {kinds.map((k) => (
+              {shownKinds.map((k) => (
                 <div key={k.id} className={ROW}>
                   <span className="t-small">{k.label} {isRequired(k) ?<span className="text-danger">*</span> : <span className="t-caption">(선택)</span>}</span>
                   <FilePick files={files[k.id] ?? []} onChange={(list) => setFiles((x) => ({ ...x, [k.id]: list }))} />
@@ -362,7 +493,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               ))}
             </div>
             <div>
-              <Button size="sm" variant="outline" onPress={() => setExtras((list) => [...list, { label: '', files: [] }])}>+ 첨부 추가</Button>
+              <Button size="sm" isDisabled={!dealChosen} variant="outline" onPress={() => setExtras((list) => [...list, { label: '', files: [] }])}>+ 첨부 추가</Button>
             </div>
             <p className="t-caption">pdf·문서·표·이미지·메일(eml, msg) 등, 파일당 8MB 까지.</p>
           </div>
@@ -374,7 +505,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               {CONTRIBUTION_FIELDS.map((f) => (
                 <label key={f.key} className="flex flex-col gap-1 t-small">
                   <span>{f.label} *</span>
-                  <input className={INPUT} inputMode="numeric" placeholder={f.hint} value={formatMoneyInput(digitsOnly(vals[f.key] ?? ''))} onChange={(e) => set(f.key)(digitsOnly(e.target.value))} />
+                  <input className={INPUT + ai(f.key)} title={aiTitle(f.key)} inputMode="numeric" placeholder={f.hint} value={formatMoneyInput(digitsOnly(vals[f.key] ?? ''))} onChange={(e) => set(f.key)(digitsOnly(e.target.value))} />
                 </label>
               ))}
               <div className="flex flex-col gap-1 t-small">

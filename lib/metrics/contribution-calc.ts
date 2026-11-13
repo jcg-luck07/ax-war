@@ -31,6 +31,21 @@ export interface ContributionResult {
   returnRate: number | null
 }
 
+/** 빈 칸은 0 이 아니라 null — "모름"과 "0원"을 구분한다 (0 원은 실제로 0 원일 때만) */
+export type PartialContribution = { [K in keyof ContributionInput]: number | null }
+
+/** 비어 있는(null) 입력 칸의 이름 목록 (화면에 쓰는 말) */
+export function missingContribution(i: PartialContribution): string[] {
+  const out: string[] = CONTRIBUTION_FIELDS.filter((f) => i[f.key] === null || i[f.key] === undefined || !Number.isFinite(i[f.key] as number)).map((f) => f.label)
+  if (i.marketingSpend === null || i.marketingSpend === undefined || !Number.isFinite(i.marketingSpend)) out.push('마케팅 지출(요청금액)')
+  return out
+}
+
+/** 모든 칸이 있을 때만 계산한다. 하나라도 비어 있으면 null — 0 으로 보고 계산하지 않는다 */
+export function calcContributionIfComplete(i: PartialContribution): ContributionResult | null {
+  return missingContribution(i).length > 0 ? null : calcContribution(i as ContributionInput)
+}
+
 /** 입력 칸 정의 — 화면이 이 순서로 칸을 그린다 (단위: 원, 1원 단위까지) */
 export const CONTRIBUTION_FIELDS: { key: Exclude<keyof ContributionInput, 'marketingSpend'>; label: string; hint: string }[] = [
   { key: 'gmv', label: '예상 GMV', hint: '이 집행·계약으로 기대하는 총 주문금액' },

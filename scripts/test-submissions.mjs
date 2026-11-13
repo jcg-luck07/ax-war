@@ -8,7 +8,7 @@ import { calcContribution, validateContribution } from '@/lib/metrics/contributi
 import { getPerformance } from '@/lib/metrics/service'
 import { DEFAULT_ASSUMPTIONS } from '@/lib/metrics/performance'
 import {
-  ATTACHMENT_KINDS, CATEGORIES, acceptSubmission, checksFor, fileCheckId, contributionFromInput, getFile, listFiles, listSubmissions, returnSubmission, submitIntake,
+  ATTACHMENT_KINDS, CATEGORIES, acceptSubmission, checksFor, kindsFor, requiredKinds, missingRequired, fileCheckId, contributionFromInput, getFile, listFiles, listSubmissions, returnSubmission, submitIntake,
 } from '@/lib/modules/intake/submissions'
 
 const { sql, cfg } = await getEngine()
@@ -16,8 +16,9 @@ let n = 0
 const t = async (name, fn) => { await fn(); n++; console.log('✔', name) }
 const user = (roles) => ({ authenticated: true, email: 'x', name: 'x', roles, isAdmin: false })
 const doc = (kind, name = `${kind}.txt`) => ({ kind, filename: name, mime: 'text/plain', content: Buffer.from(`시험 ${kind}`) })
-const REQUIRED_FILES = ['draft', 'estimate'].map((k) => doc(k))
-const INF_FILES = [...REQUIRED_FILES, doc('contract')] // 기존 계약서는 선택 (본 계약서는 계약 담당이 만든다)
+const NEW_FILES = ['draft', 'estimate'].map((k) => doc(k)) // 신규 ID: 기존 계약이 없어 기존 계약서 칸이 없다
+const REQUIRED_FILES = [...NEW_FILES, doc('contract')] // 갱신·확대(원본에 있는 대상): 기존 계약서가 필수 (확정 계약서는 승인 뒤 계약 담당이 만든다)
+const INF_FILES = REQUIRED_FILES
 const custom = (label, name = `${label}.txt`) => ({ ...doc('custom', name), label })
 const CONTRIB = { gmv: '100000000', refund: '10000000', cogs: '30000000', channelFee: '7000000', shipping: '4000000', returnLogistics: '1000000' }
 const campaignValues = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-10', requested: '15000000', memo: '시험', ...CONTRIB, ...over })
@@ -73,7 +74,7 @@ try {
     subId = s.id
     assert.equal(s.status, 'pending'); assert.equal(s.acceptRole, 'marketing_team'); assert.equal(s.submittedBy, '마케팅 팀원')
     const files = await listFiles(sql, s.id)
-    assert.deepEqual(files.map((f) => f.kind).sort(), ['draft', 'estimate'])
+    assert.deepEqual(files.map((f) => f.kind).sort(), ['contract', 'draft', 'estimate'])
     assert.equal((await getFile(sql, files[0].id)).content.toString(), `시험 ${files[0].kind}`)
     assert.equal((await E.listCases(sql)).length, 0, '접수 전에는 안건이 아니다')
     const c = contributionFromInput(s.input)
@@ -97,14 +98,23 @@ try {
     await assert.rejects(() => acceptSubmission(sql, cfg, subId, '마케팅 팀장', all), /이미 처리/)
     assert.equal((await listSubmissions(sql)).find((x) => x.id === subId).status, 'accepted')
   })
-  await t('전속계약 접수: 인플루언서 제출은 계약 안건이 되고 현 계약 만료일이 필요하다 (인플루언서 계약만 체크리스트에 계약서·조건 확인 항목이 있다)', async () => {
-    assert.ok(checksFor('influencer').some((c) => c.id === 'terms')); assert.ok(!checksFor('campaign').some((c) => c.id === 'terms'))
-    const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-22', requested: '800000000', currentExpiry: '2026-09-30', memo: '시험', ...CONTRIB }
+  await t('전속계약 접수: 인플루언서 제출은 계약 안건이 되고 현 계약 만료일이 필요하다 (갱신·확대는 체크리스트에 기존 계약서·조건 확인 항목이 있고, 신규 ID 는 없다)', async () => {
+    assert.ok(checksFor('influencer').some((c) => c.id === 'terms')); assert.ok(checksFor('campaign').some((c) => c.id === 'terms')); assert.ok(!checksFor('campaign', true).some((c) => c.id === 'terms'))
+    const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-22', requested: '800000000', currentExpiry: '2026-09-30', autoRenew: '자동 갱신', memo: '시험', ...CONTRIB }
     await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...values, currentExpiry: '' }, files: REQUIRED_FILES, by: '팀원' }), /현 계약 만료일/)
     const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values, files: INF_FILES, by: '팀원' })
     const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
     const v = await E.getCaseView(sql, r.caseId)
     assert.equal(v.case.caseType, 'w02.contract_renewal'); assert.equal(v.case.authority, 'masil_ceo', '연 8억 + 지급일 구간 밖 → Masil 대표')
+    assert.equal(v.case.payload.contract.autoRenew, true, '자동 갱신 여부가 안건에 남는다')
+  })
+  await t('자동 갱신 여부: 갱신 제출에는 필수이고 정해진 값만 받으며, "자동 갱신 아님"이면 아니오로 남는다', async () => {
+    const values = { settlementDate: '2026-09-15', contractDeadline: '2026-07-23', requested: '800000000', currentExpiry: '2026-09-30', memo: '시험', ...CONTRIB }
+    await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-005', values, files: INF_FILES, by: '팀원' }), /자동 갱신 여부/)
+    await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-005', values: { ...values, autoRenew: '아마도' }, files: INF_FILES, by: '팀원' }), /자동 갱신 여부/)
+    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-005', values: { ...values, autoRenew: '자동 갱신 아님' }, files: INF_FILES, by: '팀원' })
+    const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
+    assert.equal((await E.getCaseView(sql, r.caseId)).case.payload.contract.autoRenew, false)
   })
   await t('반려: 반려하면 안건이 만들어지지 않고 사유가 남는다', async () => {
     const s = await submit({ refId: 'CMP-0005' })
@@ -116,7 +126,7 @@ try {
   })
   await t('신규 ID: 원본에 없는 인플루언서·캠페인 ID 로 제출·접수할 수 있고, 이름·형식·중복을 검사한다', async () => {
     const inf = (over = {}) => ({ settlementDate: '2026-09-15', contractDeadline: '2026-07-26', requested: '300000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새별', ...over })
-    const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: category === 'influencer' ? INF_FILES : REQUIRED_FILES, by: '팀원' })
+    const go = (values, refId = 'INF-011', category = 'influencer') => submitIntake(sql, { category, refId, values, files: NEW_FILES, by: '팀원' })
     await assert.rejects(() => go(inf({ refName: '' })), /이름/)
     await assert.rejects(() => go(inf(), 'INF-1'), /형식/)
     await assert.rejects(() => go(inf(), 'INF-001'), /이미 있는 분류ID입니다/)
@@ -135,7 +145,7 @@ try {
   })
   await t('신규 캠페인 ID: 소속 인플루언서(기존 또는 NONE)가 필요하고, 안건에 소속이 남는다', async () => {
     const base = { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', refName: '새 캠페인', productLine: '색조' }
-    const go = (values) => submitIntake(sql, { category: 'campaign', refId: 'CMP-0026', values, files: REQUIRED_FILES, by: '팀원' })
+    const go = (values) => submitIntake(sql, { category: 'campaign', refId: 'CMP-0026', values, files: NEW_FILES, by: '팀원' })
     await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-999' }), /소속 인플루언서/)
     await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-002', productLine: '' }), /제품 종류/)
     await assert.rejects(() => go({ ...base, parentInfluencerId: 'INF-002', productLine: '가구' }), /제품 종류는/)
@@ -157,18 +167,21 @@ try {
     await assert.rejects(() => submit({ refId: 'CMP-0099', values: campaignValues({ dealType: '확대', isNewRef: '1', parentInfluencerId: 'NONE', productLine: '색조' }) }), /신규"로만/)
     // 새 캠페인: 이름 칸 없이 "인플루언서 제품종류 캠페인N"(N = 그 인플루언서의 다음 번호). 이미 제출된 새 캠페인도 번호에 센다.
     const nv = (over = {}) => ({ settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', parentInfluencerId: 'INF-001', productLine: '색조', ...over })
-    const n1 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0027', values: nv({ refName: '무시됨' }), files: REQUIRED_FILES, by: '팀원' })
+    const n1 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0027', values: nv({ refName: '무시됨' }), files: NEW_FILES, by: '팀원' })
     assert.equal(n1.input.refName, '혜인 색조 캠페인4'); assert.equal(n1.title, '혜인 색조 캠페인4 신규 — 요청 5,000,000원')
-    const n2 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0028', values: nv({ productLine: '기초' }), files: REQUIRED_FILES, by: '팀원' })
+    const n2 = await submitIntake(sql, { category: 'campaign', refId: 'CMP-0028', values: nv({ productLine: '기초' }), files: NEW_FILES, by: '팀원' })
     assert.equal(n2.input.refName, '혜인 기초 캠페인5'); assert.equal(n2.title, '혜인 기초 캠페인5 신규 — 요청 5,000,000원')
     // 전속계약: 구분 "신규"는 현 계약 만료일 없이도 올릴 수 있고, "갱신"은 만료일이 필요하다
     const base = { settlementDate: '2026-09-15', contractDeadline: '2026-07-26', feeType: '고정 피', fixedFee: '800000000', memo: '시험', ...CONTRIB }
     const e = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '신규' }, files: INF_FILES, by: '팀원' })
     assert.equal(e.title, '토모카(INF-003) 연간 전속계약 신규 — 고정 피 연 800,000,000원'); assert.equal(e.input.currentExpiry, '')
     await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신' }, files: INF_FILES, by: '팀원' }), /현 계약 만료일/)
-    const f = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30' }, files: INF_FILES, by: '팀원' })
+    // 구분이 "신규"면 기존 계약서가 없어 첨부하지 않아도 된다 (갱신이면 필수)
+    await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { ...base, dealType: '신규' }, files: NEW_FILES, by: '팀원' })
+    await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30', autoRenew: '자동 갱신' }, files: NEW_FILES, by: '팀원' }), /기존 계약서/)
+    const f = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30', autoRenew: '자동 갱신' }, files: INF_FILES, by: '팀원' })
     assert.match(f.title, /토모카\(INF-003\) 연간 전속계약 갱신\d* — 고정 피 연 800,000,000원/)
-    const g = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30' }, files: INF_FILES, by: '팀원' })
+    const g = await submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { ...base, dealType: '갱신', currentExpiry: '2026-09-30', autoRenew: '자동 갱신' }, files: INF_FILES, by: '팀원' })
     assert.notEqual(g.title, f.title); assert.match(g.title, /갱신\d+ — /)
     // 접수하면 안건 제목도 이 제목을 쓴다 (캠페인은 앞에 SUB-번호)
     const r = await acceptSubmission(sql, cfg, f.id, '팀장', await allChecks(f.id, 'influencer'))
@@ -176,17 +189,31 @@ try {
     const r2 = await acceptSubmission(sql, cfg, a.id, '팀장', await allChecks(a.id, 'campaign'))
     assert.equal((await E.getCaseView(sql, r2.caseId)).case.title, `SUB-${a.id} ${a.title}`)
   })
-  await t('첨부 종류: 기안서·추계서는 필수, 계약서는 선택이고, 그 밖에는 종류 이름을 직접 적어 여러 개 추가할 수 있다', async () => {
+  await t('첨부 종류: 기안서·추계서는 필수, 기존 계약서는 갱신·확대에서만 필수(신규 ID 는 칸 없음), 그 밖에는 종류 이름을 직접 적어 여러 개 추가할 수 있다', async () => {
     assert.deepEqual(ATTACHMENT_KINDS.filter((k) => k.required).map((k) => k.id), ['draft', 'estimate'])
     assert.deepEqual(ATTACHMENT_KINDS.filter((k) => !k.required).map((k) => k.id), ['contract', 'consult'])
+    assert.deepEqual(requiredKinds('campaign').map((k) => k.id), ['draft', 'estimate', 'contract'])
+    assert.deepEqual(requiredKinds('campaign', true).map((k) => k.id), ['draft', 'estimate'])
+    assert.deepEqual(kindsFor(true).map((k) => k.id), ['draft', 'estimate', 'consult'])
+    // 갱신(원본에 있는 인플루언서)·확대(원본에 있는 캠페인)는 기존 계약서 없이 올릴 수 없다
+    await assert.rejects(() => submit({ refId: 'CMP-0005', files: NEW_FILES }), /기존 계약서/)
+    await assert.rejects(() => submitIntake(sql, { category: 'influencer', refId: 'INF-003', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', autoRenew: '자동 갱신', memo: '시험', ...CONTRIB }, files: NEW_FILES, by: '팀원' }), /기존 계약서/)
+    // 신규 ID 는 기존 계약이 없어서 기존 계약서를 올릴 수 없다
+    await assert.rejects(() => submitIntake(sql, { category: 'campaign', refId: 'CMP-0029', values: { settlementDate: '2026-09-10', contractDeadline: '2026-07-11', requested: '5000000', memo: '시험', ...CONTRIB, isNewRef: '1', parentInfluencerId: 'NONE', productLine: '색조' }, files: REQUIRED_FILES, by: '팀원' }), /기존 계약이 없어서/)
+    // 필수 항목을 채우지 않고 제출한 건의 부족 목록에도 반영된다
+    assert.ok(missingRequired('campaign', { isNewRef: '' }, ['draft', 'estimate']).includes('첨부: 기존 계약서'))
+    assert.ok(!missingRequired('campaign', { isNewRef: '1' }, ['draft', 'estimate']).includes('첨부: 기존 계약서'))
+    // 접수 체크: 기존 계약서 확인 항목은 갱신·확대에만 있다
+    assert.ok(checksFor('influencer').some((c) => c.id === 'terms') && checksFor('campaign').some((c) => c.id === 'terms'))
+    assert.ok(!checksFor('influencer', true).some((c) => c.id === 'terms') && !checksFor('campaign', true).some((c) => c.id === 'terms'))
     const s = await submit({ refId: 'CMP-0006', files: [...REQUIRED_FILES, custom('예상 GMV', 'gmv.csv'), custom('예상 GMV', 'gmv2.csv'), custom('주문 기록', 'orders.csv')] })
     const f = await listFiles(sql, s.id)
     assert.deepEqual(f.filter((x) => x.kind === 'custom').map((x) => `${x.label}:${x.filename}`).sort(), ['예상 GMV:gmv.csv', '예상 GMV:gmv2.csv', '주문 기록:orders.csv'])
   })
 
   await t('기안 접수 → 재무팀 회부(300억 판정) → 계약 담당 회부(계약서 첨부) → 승인권자 결정 순서로만 흘러간다', async () => {
-    // 전속계약도 기존 계약서·협의서 없이 제출·접수할 수 있다 (선택 항목)
-    const noContract = await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: REQUIRED_FILES, by: '팀원' })
+    // 전속계약 갱신: 기존 계약서를 첨부해 제출·접수한다 (협의서는 선택)
+    const noContract = await submitIntake(sql, { category: 'influencer', refId: 'INF-004', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-22', requested: '500000000', currentExpiry: '2026-10-31', autoRenew: '자동 갱신', memo: '시험', ...CONTRIB }, files: REQUIRED_FILES, by: '팀원' })
     await acceptSubmission(sql, cfg, noContract.id, '팀장', await allChecks(noContract.id, 'influencer'))
     // 팀원들이 올린 안건을 하나의 기안에 모아 접수한다
     const first = await submit({ refId: 'CMP-0007' })
@@ -256,7 +283,7 @@ try {
 
   await t('계약 담당이 올린 계약서는 그 단계가 열려 있는 동안 뺄 수 있고, 다음 단계로 넘어가면 뺄 수 없다', async () => {
     const { addCaseFile, removeCaseFile, listCaseFiles, contractRefer, financeRefer } = await import('@/lib/modules/w02/handoff')
-    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-005', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-24', requested: '400000000', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB }, files: INF_FILES, by: '팀원' })
+    const s = await submitIntake(sql, { category: 'influencer', refId: 'INF-005', values: { settlementDate: '2026-09-15', contractDeadline: '2026-08-24', requested: '400000000', currentExpiry: '2026-10-31', autoRenew: '자동 갱신', memo: '시험', ...CONTRIB }, files: INF_FILES, by: '팀원' })
     const r = await acceptSubmission(sql, cfg, s.id, '팀장', await allChecks(s.id, 'influencer'))
     const id = await addCaseFile(sql, { caseId: r.caseId, kind: 'contract', filename: 'c.txt', mime: 'text/plain', content: Buffer.from('x'), by: '계약 담당' })
     assert.equal((await listCaseFiles(sql, r.caseId)).length, 1)
@@ -270,7 +297,7 @@ try {
   })
 
   await t('성과 피 비율: 선택 입력이고, 적으면 0 초과 100 이하여야 하며 계약 안건에 남는다', async () => {
-    const vals = { settlementDate: '2026-09-15', contractDeadline: '2026-08-25', currentExpiry: '2026-10-31', memo: '시험', ...CONTRIB, feeType: '혼합 피', fixedFee: '300000000', performanceFee: '50000000' }
+    const vals = { settlementDate: '2026-09-15', contractDeadline: '2026-08-25', currentExpiry: '2026-10-31', autoRenew: '자동 갱신', memo: '시험', ...CONTRIB, feeType: '혼합 피', fixedFee: '300000000', performanceFee: '50000000' }
     const go = (over = {}) => submitIntake(sql, { category: 'influencer', refId: 'INF-006', values: { ...vals, ...over }, files: REQUIRED_FILES, by: '팀원' })
     await assert.rejects(() => go({ performanceRate: '150' }), /0보다 크고 100 이하/)
     await assert.rejects(() => go({ performanceRate: '0' }), /0보다 크고 100 이하/)

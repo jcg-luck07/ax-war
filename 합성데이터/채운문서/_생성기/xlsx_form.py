@@ -4,7 +4,7 @@ from xml.sax.saxutils import escape
 import json
 OUT = os.environ['XLSX_OUT']
 _J = json.load(open(os.environ['XLSX_JSON'], encoding='utf-8')) if os.environ.get('XLSX_JSON') else {}
-VALS, NOTES = _J.get('vals', {}), _J.get('notes', {})
+VALS, NOTES, CALC = _J.get('vals', {}), _J.get('notes', {}), _J.get('calc', {})
 
 # ───────── 서식 번호 (styles.xml 의 cellXfs 순서와 같다)
 S = dict(default=0, title=1, section=2, label=3, in_won=4, in_pct=5, in_int=6, in_date=7, in_text=8, calc_won=9, calc_pct=10,
@@ -33,29 +33,29 @@ ROWS = [
     ('calc', 'net', '순매출 (Net Revenue)', 'won', '예상 GMV − 예상 반품 환불액', ('gmv', 'refund', '{gmv}-{refund}')),
 
     ('section', None, '2. 비용 가정 (공헌이익에서 빼는 비용)', None, None, None),
-    ('input', 'cogsrate', '제품 원가율 (순매출 대비)', 'pct', '사내 원가표 기준', None),
-    ('input', 'feerate', '채널 수수료율 (순매출 대비)', 'pct', '사내 원가표 기준', None),
+    ('input', 'cogsunit', '주문당 제품 원가', 'won', '사내 원가표(제품 원가 단가) 기준 — 환불돼도 원가는 회수하지 않아요 (원본 기본 가정)', None),
+    ('input', 'feerate', '채널 수수료율 (GMV 대비)', 'pct', '사내 원가표 기준 — GMV 에 곱해요. 환불돼도 수수료는 회수하지 않아요 (원본 기본 가정)', None),
     ('input', 'shipunit', '주문당 출고(배송)비', 'won', '사내 원가표 기준', None),
     ('input', 'retcount', '예상 반품 건수 (건)', 'int', None, None),
     ('input', 'retunit', '반품 건당 물류비', 'won', '사내 원가표 기준', None),
-    ('calc', 'cogs', '제품 원가 (COGS)', 'won', '순매출 × 제품 원가율', ('net', 'cogsrate', '{net}*{cogsrate}')),
-    ('calc', 'fee', '채널 수수료', 'won', '순매출 × 채널 수수료율', ('net', 'feerate', '{net}*{feerate}')),
+    ('calc', 'cogs', '제품 원가 (COGS)', 'won', '주문당 제품 원가 × 예상 주문 수', ('cogsunit', 'orders', '{cogsunit}*{orders}')),
+    ('calc', 'fee', '채널 수수료', 'won', '예상 GMV × 채널 수수료율', ('gmv', 'feerate', '{gmv}*{feerate}')),
     ('calc', 'ship', '출고(배송)비', 'won', '주문당 출고비 × 예상 주문 수', ('shipunit', 'orders', '{shipunit}*{orders}')),
     ('calc', 'retlog', '반품 물류비', 'won', '반품 건당 물류비 × 예상 반품 건수', ('retunit', 'retcount', '{retunit}*{retcount}')),
 
-    ('section', None, '3. 마케팅 지출 (요청금액)', None, None, None),
-    ('input', 'mk_inf', '인플루언서 비용 (건별 진행비)', 'won', '연 전속 고정 피 · 성과 피와 별도인 건별 진행비', None),
+    ('section', None, '3. 마케팅 지출 (건별 지출 · 공헌이익에 들어가요)', None, None, None),
+    ('input', 'mk_inf', '인플루언서 비용 (건별 진행비)', 'won', '건별 진행비 (캠페인 집행은 요청금액). 연 전속 고정 피·성과 피는 5번 구역에서 따로 반영해요', None),
     ('input', 'mk_perf', '퍼포먼스 광고비', 'won', '매체 · 노출 단가 × 노출량', None),
     ('input', 'mk_off', '오프라인 비용', 'won', None, None),
-    ('calc', 'mk', '마케팅 지출 합계 (= 요청금액)', 'won', '위 세 항목의 합', ('mk_inf', 'mk_perf', 'mk_off', '{mk_inf}+{mk_perf}+{mk_off}')),
+    ('calc', 'mk', '마케팅 지출 합계 (캠페인 집행은 = 요청금액)', 'won', '위 세 항목의 합', ('mk_inf', 'mk_perf', 'mk_off', '{mk_inf}+{mk_perf}+{mk_off}')),
 
     ('section', None, '4. 결과 (공식 지표 — 사내 계산 정의 1.4)', None, None, None),
     ('key', 'cp', '공헌이익 (Contribution Profit)', 'won', '순매출 − 제품 원가 − 채널 수수료 − 출고(배송)비 − 반품 물류비 − 마케팅 지출  (주 판단기준)', ('net', 'mk', '{net}-{cogs}-{fee}-{ship}-{retlog}-{mk}')),
     ('calc', 'real', '실질 ROAS', 'ratio', '공헌이익 ÷ 마케팅 지출', ('cp', 'mk', '{cp}/{mk}')),
     ('calc', 'nominal', '명목 ROAS', 'ratio', '예상 GMV ÷ 마케팅 지출', ('gmv', 'mk', '{gmv}/{mk}')),
 
-    ('section', None, '5. 공헌이익에 포함되지 않는 비용 (판단 보충용 · 공식 지표 아님)', None, None, None),
-    ('input', 'fixed', '연 전속 고정 피', 'won', '계약서 고정 피 (고정 피·혼합 피 계약일 때)', None),
+    ('section', None, '5. 인플루언서 연 계약 보수 — 공헌이익에는 들어가지 않고 여기서 따로 반영 (전속계약 · 판단 보충용 · 공식 지표 아님)', None, None, None),
+    ('input', 'fixed', '연 전속 고정 피', 'won', '계약서 고정 피 (고정 피·혼합 피 전속계약일 때). 요청금액 = 연 전속 고정 피 + 연 예상 성과 피', None),
     ('input', 'attr', '예상 귀속 GMV (연)', 'won', '성과 피 기준: 귀속 GMV · 귀속 방식 last-click 7일 (고정)', None),
     ('input', 'prate', '성과 피 비율', 'pct', '귀속 GMV의 몇 %', None),
     ('input', 'pcap', '성과 피 연 상한 (선택)', 'won', '없으면 비워 두세요', None),
@@ -109,9 +109,11 @@ def formula_for(spec, rounded=False):
     return f'IFERROR(IF(COUNT({counts})=0,"",{body}),"")'
 
 # ───────── 시트 XML
-def cell(ref, style, value=None, formula=None, is_text=False):
+def cell(ref, style, value=None, formula=None, is_text=False, cached=None):
     if formula is not None:
-        return f'<c r="{ref}" s="{style}"><f>{escape(formula)}</f></c>'
+        # 계산 결과(cached)를 함께 저장해 두면 엑셀이 아닌 도구(미리보기·AI 읽기)도 값을 볼 수 있다. 엑셀은 열 때 다시 계산한다.
+        v = f'<v>{cached}</v>' if cached is not None else ''
+        return f'<c r="{ref}" s="{style}"><f>{escape(formula)}</f>{v}</c>'
     if value is None or value == '':
         return f'<c r="{ref}" s="{style}"/>'
     if is_text:
@@ -144,7 +146,7 @@ for rn, row in layout:
             heights[rn] = 44
     else:  # calc / key
         st = S['calc_key'] if kind == 'key' else CALC_STYLE[fmt]
-        cells = [cell(f'A{rn}', S['label'], label, is_text=True), cell(f'B{rn}', st, formula=formula_for(spec, rounded=(fmt == 'won'))), cell(f'C{rn}', S['note'], note, is_text=True), cell(f'D{rn}', S['in_text'], NOTES.get(key), is_text=True)]
+        cells = [cell(f'A{rn}', S['label'], label, is_text=True), cell(f'B{rn}', st, formula=formula_for(spec, rounded=(fmt == 'won')), cached=CALC.get(key)), cell(f'C{rn}', S['note'], note, is_text=True), cell(f'D{rn}', S['in_text'], NOTES.get(key), is_text=True)]
     ht = f' ht="{heights[rn]}" customHeight="1"' if rn in heights else ''
     rows_xml.append(f'<row r="{rn}"{ht}>{"".join(cells)}</row>')
 
@@ -182,7 +184,8 @@ GUIDE = [
     '3. 공식 지표는 4번 구역(공헌이익·실질 ROAS·명목 ROAS)이에요. 5번 구역은 판단 보충용이라 공식 지표가 아니에요.',
     '4. 성과 피는 귀속 GMV 기준, 귀속 방식은 last-click 7일로 고정이에요.',
     '5. 모르는 값은 비워 두지 말고 "미확인"이라고 적은 뒤 8번 구역과 기안서의 "부족한 정보"에 올려요.',
-    '6. 요청금액(마케팅 지출 합계)은 계약서 금액·기안서 요청금액과 같아야 해요.',
+    '6. 요청금액은 계약서 금액·기안서와 같아야 해요. 캠페인 집행은 마케팅 지출 합계(3번), 전속계약은 연 전속 고정 피 + 연 예상 성과 피(5번)예요.',
+    '   원가는 주문당 단가 × 주문 수, 채널 수수료는 GMV × 수수료율이에요 (원본 정의 — 환불돼도 원가·수수료는 회수하지 않아요).',
     '7. 이 문서는 합성(가상) 데이터예요. 실제 계약·실제 성과가 아니에요.' if VALS else '7. 이 문서는 합성(가상) 데이터를 만들 때 쓰는 빈 양식이에요.',
 ]
 g_rows = []

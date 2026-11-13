@@ -473,6 +473,29 @@ export async function decide(
     const gate = await t`SELECT title FROM tasks WHERE case_id = ${ap.caseId} AND status = 'open' AND detail->>'gate' = 'pre-approval' ORDER BY id`
     if (gate.length > 0) throw new EngineError(`앞 단계가 끝나야 결정할 수 있어요: ${gate.map((g) => g.title).join(', ')}`)
     const c = await loadCase(t, ap.caseId, true)
+
+    // 그룹 300억 배분 대상이라 CEO/이사회가 결정하는 안건: CEO 가 부결하면 안건이 끝나는 것이 아니라 300억 배분 대상에서 빠진다.
+    // "대상 아님"으로 바꿔 다시 평가하고, 일반 승인 규칙의 승인권자(예: Masil 대표)가 이어서 결정한다. (CEO 승인은 그대로 최종 승인이다.)
+    const f0 = (c.payload.facts ?? {}) as Facts
+    if (input.outcome === 'rejected' && ap.requiredRole === 'ceo_board' && f0.linked_to_group_300 === true) {
+      const who = input.byName && input.byName !== cfg.roleLabel(input.byRole) ? `${input.byName} (${cfg.roleLabel(input.byRole)})` : cfg.roleLabel(input.byRole)
+      await t`
+        UPDATE approvals SET status = 'superseded', decided_by = ${who}, decided_at = now(),
+          comment = ${`${input.comment ? input.comment + ' — ' : ''}CEO/이사회 부결: 그룹 300억 배분 대상에서 제외하고 일반 승인 규칙으로 다시 결정`} WHERE id = ${approvalId}
+      `
+      await logEvent(t, ap.caseId, 'decided', '사람', input.byName, {
+        approvalId, outcome: 'rejected', byRole: input.byRole, byRoleLabel: cfg.roleLabel(input.byRole), requiredRole: ap.requiredRole,
+        comment: input.comment ?? null, reroute: 'group300_excluded',
+      })
+      const facts = { ...f0, linked_to_group_300: false }
+      await t`UPDATE decision_cases SET payload = ${J(t, { ...c.payload, facts, group300Excluded: { by: input.byName, at: new Date().toISOString(), comment: input.comment ?? null } })}, updated_at = now() WHERE id = ${ap.caseId}`
+      await logEvent(t, ap.caseId, 'facts_changed', '사람', input.byName, {
+        reason: 'CEO/이사회 부결 — 그룹 300억 배분 대상에서 제외', origin: '사용자입력', changed: { linked_to_group_300: { before: true, after: false } },
+      })
+      const res = await evaluateInTx(t, cfg, ap.caseId, 'CEO/이사회 부결로 300억 배분 대상에서 제외')
+      return { caseId: ap.caseId, outcome: 'rejected', statusAfter: res.statusAfter as CaseStatus, taskIds: [] }
+    }
+
     const status = input.outcome === 'approved' ? 'approved' : input.outcome === 'rejected' ? 'rejected' : 'on_hold'
     await t`
       UPDATE approvals SET status = ${input.outcome},

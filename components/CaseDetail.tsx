@@ -3,11 +3,13 @@ import { Card } from '@heroui/react'
 import { Warning } from '@phosphor-icons/react/ssr'
 import { ProfitabilityCard } from '@/components/ProfitabilityCard'
 import { buildJudgmentInput } from '@/lib/modules/w02/judgment-input'
+import { getSavedJudgment, hashJudgmentInput } from '@/lib/modules/w02/ai-store'
+import { getCandidate, groupKey, groupLabel } from '@/lib/modules/w02/candidates'
 import { buildProfitability, buildShareCompare } from '@/lib/modules/w02/profitability'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
 import { Pill } from '@/components/bits'
-import { DecisionPanel, InfoReplyForm, ResubmitButton, TaskDoneButton } from '@/components/case-actions'
+import { CandidateBadge, DecisionPanel, InfoReplyForm, ResubmitButton, TaskDoneButton } from '@/components/case-actions'
 import { ContractReferPanel, FinanceReferItems, NonrenewalRequestPanel, RecordReplyPanel, type CheckItem } from '@/components/handoff-panels'
 import { REWORK_TARGETS, listCaseFiles } from '@/lib/modules/w02/handoff'
 import { NumberedList } from '@/components/NumberedList'
@@ -16,7 +18,7 @@ import { amountKeyOf, type RevisionRecord } from '@/lib/modules/w02/revision'
 import { FlowExplorer } from '@/components/FlowExplorer'
 import { LANES_OF_ROLE } from '@/lib/process/detail'
 import { canHandle, currentUser, decidingRole, roleLabels } from '@/lib/app/auth'
-import { flowForCaseType, flowWithoutGroupReport } from '@/lib/process/definitions'
+import { flowForCaseType, flowWithGroup300, flowWithoutGroupReport, usesGroup300Flow } from '@/lib/process/definitions'
 import { deriveFlowState } from '@/lib/process/state'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
 import {
@@ -80,7 +82,7 @@ function eventSummary(e: EventRow): string {
 /** 연관 안건 표의 줄 높이(px) — 표와 왼쪽 부결 표시 칸의 줄을 맞춘다 */
 const ROW_H = 34
 
-export async function CaseDetail({ caseId }: { caseId: number }) {
+export async function CaseDetail({ caseId, profitOnly }: { caseId: number; /** 수익성 검증 칸만 그린다 (미확정 안건 화면) — 'approver' 면 승인권자 화면의 안내 문구 */ profitOnly?: 'finance' | 'approver' }) {
   const { sql, cfg, cash } = await getEngine()
   let view: CaseView
   try {
@@ -107,7 +109,10 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const authRole = pending ? pending.requiredRole : decision?.status === 'decided' ? c.authority : null // 모르는 사실이 있으면 잠정값이 있어도 미확정
   // 그룹 보고 단계는 Masil 대표가 승인하는 안건(캠페인·인플루언서 계약 모두)에만 그린다 — 그 밖에는 기록 보관 바로 다음이 계약 체결
   const baseFlow = flowForCaseType(c.caseType)
-  const flow = baseFlow && authRole !== 'masil_ceo' ? flowWithoutGroupReport(baseFlow) : baseFlow // Masil 대표가 승인하는 건만 그룹 보고가 있다
+  const flow0 = baseFlow && authRole !== 'masil_ceo' ? flowWithoutGroupReport(baseFlow) : baseFlow // Masil 대표가 승인하는 건만 그룹 보고가 있다
+  const lastMain = [...view.approvals].reverse().find((a) => (a.kind ?? 'main') === 'main' && ['approved', 'rejected', 'on_hold'].includes(a.status))
+  // 그룹 300억 배분 대상 안건: CEO/이사회 결정 → (부결이면) 300억에서 빠지고 일반 승인 규칙의 승인권자가 재결정
+  const flow = flow0 && usesGroup300Flow(c.payload as { facts?: Record<string, unknown>; group300Excluded?: unknown }, lastMain?.status ?? null) ? flowWithGroup300(flow0) : flow0
   const flowState = flow ? deriveFlowState(flow, view) : null
   // 승인권자가 아직 정해지지 않았으면 흐름표에 "승인권자 미확정"으로 둔다
   const approverLabel = authorityShort(authRole)
@@ -164,7 +169,9 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const warning = relatedWarning({ category: CASE_TYPE_CATEGORY[c.caseType] ?? null, influencerId: String(c.subjectRefs.influencer ?? ''), id: c.id }, allRows, String(influencerName))
 
   // 수익성 검증: 이 안건의 대상(인플루언서/캠페인)을 비교 대상과 나란히 놓고, AI 판단은 버튼을 눌렀을 때 Claude 에게 묻는다
-  const subCalc = (c.payload as { submission?: { calc?: { inputs?: { gmv: number; refund: number; marketingSpend: number }; result: { netRevenue: number; contributionProfit: number } } } }).submission?.calc
+  // 제출한 추계서의 공헌이익 — 비어 있는 칸이 있으면 result 가 null 이다 (0 원으로 계산하지 않고 비교·AI 판단에서 뺀다)
+  const subCalc = (c.payload as { submission?: { calc?: { inputs?: { gmv: number | null; refund: number | null; marketingSpend: number | null }; result: { netRevenue: number; contributionProfit: number } | null; missing?: string[] } } }).submission?.calc
+  const estimateMissing = subCalc ? (subCalc.missing?.length ? subCalc.missing : subCalc.result === null ? ['공헌이익 계산 칸'] : []) : []
   const [campRows, infRows] = await Promise.all([
     entityRows(sql, MASIL_MODEL, 'campaign').catch(() => []),
     entityRows(sql, MASIL_MODEL, 'influencer').catch(() => []),
@@ -176,9 +183,10 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     perf,
     campaigns: campRows.map((r) => ({ id: String(r.campaign_id), name: String(r.campaign_name), influencerId: String(r.influencer_id), productLine: String(r.product_line) })),
     influencers: infRows.map((r) => ({ id: String(r.influencer_id), name: String(r.influencer_name), feeType: r.fee_type ? String(r.fee_type) : null })),
-    estimate: subCalc?.inputs
-      ? { cp: subCalc.result.contributionProfit, netRevenue: subCalc.result.netRevenue, gmv: subCalc.inputs.gmv, spend: subCalc.inputs.marketingSpend, refund: subCalc.inputs.refund }
+    estimate: subCalc?.inputs && subCalc.result && estimateMissing.length === 0
+      ? { cp: subCalc.result.contributionProfit, netRevenue: subCalc.result.netRevenue, gmv: subCalc.inputs.gmv ?? 0, spend: subCalc.inputs.marketingSpend ?? 0, refund: subCalc.inputs.refund ?? 0 }
       : null,
+    estimateMissing,
   })
   // 요청 비중(이번 기안의 인플루언서별 요청액) vs 지난 1년 집행 비중 — 캠페인 집행 안건에서만
   const rowsForShares = c.caseType === EXPANSION_CASE_TYPE ? (hasInfluencer ? allRows : await loadCaseRows(sql)) : []
@@ -222,7 +230,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const lines = (list: string[]) => <>{list.map((l, i) => <p key={i} className="t-small">{l}</p>)}</>
   const contractLines = contractPackage(view, AS_OF).lines
   const feeInfo = (c.payload as { contract?: FeeInfo }).contract
-  const contractAmount = Number(((c.payload as { evaluation?: { facts?: Record<string, unknown> } }).evaluation?.facts ?? {}).annual_contract_value_krw ?? 0)
+  const contractAmount = Number(({ ...((c.payload as { evaluation?: { facts?: Record<string, unknown> } }).evaluation?.facts ?? {}), ...((c.payload as { facts?: Record<string, unknown> }).facts ?? {}) }).annual_contract_value_krw ?? 0)
   const feeKnown = c.caseType !== EXPANSION_CASE_TYPE && Boolean(feeInfo?.feeType) // 제출 때 계약 방식·금액을 입력한 전속계약
   // 인플루언서의 보수 구조(원본 마스터): 고정 / 성과 / 고정+성과
   const FEE_WORD: Record<string, string> = { 고정: '고정 피', 성과: '성과 피', '고정+성과': '혼합 피(고정 피 + 성과 피)' }
@@ -230,7 +238,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const hasPerfFee = feeKnown ? feeInfo?.feeType !== '고정 피' : Boolean(masterFee?.includes('성과'))
   // 빠진 자료 — 꼭 필요한 것만 짧게 알려 준다
   const missingTerms = hasInfluencer && hasPerfFee && !(Number(feeInfo?.performanceRate ?? 0) > 0) ? '성과 피 비율을 아직 몰라요 (마케팅에 확인 필요)' : null
-  const missingOldContract = oldContracts.length === 0 ? '기존 계약서 없음 (선택 항목)' : null
+  const missingOldContract = oldContracts.length === 0 ? '기존 계약서 첨부 없음 (신규 ID 는 원래 없어요)' : null
   const financeMissing = [missingTerms, missingOldContract].filter((x): x is string => Boolean(x))
   const contractMissing = financeMissing
   const infContractRow = relatedContracts[0]
@@ -264,7 +272,8 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
   const originalAmount = revPayload.originalAmount ?? currentAmount
   const firstDecided = view.approvals.filter((a) => a.kind === 'main' && (a.status === 'approved' || a.status === 'rejected'))[0]
   const originalApprover = revPayload.authorityLock ?? firstDecided?.requiredRole ?? null
-  const canRevise = ['approved', 'rejected', 'closed'].includes(c.status) && Boolean(firstDecided) && currentAmount > 0 && canHandle(user, '마케팅')
+  // 승인 뒤부터 최종 종결 전까지, 마케팅 부서와 계약 담당이 할 수 있다
+  const canRevise = ['approved', 'rejected'].includes(c.status) && Boolean(firstDecided) && currentAmount > 0 && (canHandle(user, '마케팅') || canHandle(user, '계약 담당'))
   const amountLabel = c.caseType === EXPANSION_CASE_TYPE ? '요청 금액' : '계약 금액'
   const revLine = (r: RevisionRecord) => `${r.no}차 수정 보고 — ${amountLabel} ${fmtWon(r.fromAmount)} → ${fmtWon(r.toAmount)} (${(r.pct * 100).toFixed(1)}% ${r.toAmount > r.fromAmount ? '증가' : '감소'}, ${r.route === 'direct' ? '승인권자에게 바로 보고' : '재무팀 절차부터 다시'})${r.reason ? ` · 사유: ${r.reason}` : ''}`
   const revisionNote = revisions.length > 0 ? lines([`원 ${amountLabel} ${fmtWon(originalAmount)} → 현재 ${fmtWon(currentAmount)}`, ...revisions.map(revLine)]) : null
@@ -296,6 +305,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     perf,
     subject: { influencerId: String(c.subjectRefs.influencer ?? ''), campaignId: c.subjectRefs.campaign ? String(c.subjectRefs.campaign) : undefined },
     allocation: shares,
+    amount: revisions.length > 0 ? { currentKrw: currentAmount, originalKrw: originalAmount, revisions: revisions.map((r) => ({ no: r.no, fromKrw: r.fromAmount, toKrw: r.toAmount, pct: r.pct, reason: r.reason })) } : null,
     fees: {
       feeType: feeKnown ? feeInfo?.feeType ?? null : masterFee,
       fixedFeeKrw: c.caseType !== EXPANSION_CASE_TYPE ? (feeKnown ? feeInfo?.fixedFeeKrw ?? null : contractAmount || null) : (masterFee?.includes('고정') ? infContractRow?.amount ?? null : null),
@@ -304,13 +314,30 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
       hasPerfFee,
     },
   })
+  // 저장된 AI 판단 — 판단 자료(해시)가 그대로이면 어느 단계·누가 열어도 같은 판단을 보여 준다
+  const aiInputHash = hashJudgmentInput(judgmentInput)
+  const aiSaved = await getSavedJudgment(sql, c.id)
+  const aiProps = { caseId: c.id, aiHash: aiInputHash, aiSaved }
+  const candidate = await getCandidate(sql, c.id)
+  if (profitOnly) {
+    return (
+      <Card>
+        <Card.Header>
+          <Card.Title>수익성 검증 — {String(c.title)}</Card.Title>
+        </Card.Header>
+        <Card.Content>
+          <ProfitabilityCard data={profData} stepLabel={profitOnly === 'approver' ? approverName : '재무팀'} isApprover={profitOnly === 'approver'} shares={shares} judgmentInput={judgmentInput} {...aiProps} />
+        </Card.Content>
+      </Card>
+    )
+  }
   const decisionEvidence = (
     <div className="flex flex-col gap-3 border border-default p-2">
       <p className="t-small font-semibold">판단 근거</p>
       {revisionNote && <div className="flex flex-col gap-1"><p className="t-small font-semibold">수정 보고 (이 금액을 기준으로 판단해요)</p>{revisionNote}</div>}
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">수익성 검증</p>
-        <ProfitabilityCard data={profData} stepLabel={approverName} isApprover shares={shares} judgmentInput={judgmentInput} />
+        <ProfitabilityCard data={profData} stepLabel={approverName} isApprover shares={shares} judgmentInput={judgmentInput} {...aiProps} />
       </div>
       <div className="flex flex-col gap-1">
         <p className="t-small font-semibold">첨부 파일</p>
@@ -396,7 +423,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
     ...revisionItem,
     { key: 'files', title: '첨부 파일', body: subFileLinks },
     ...(termsBody.props.children.length > 0 ? [{ key: 'terms', title: '계약 방식', body: termsBody }] : []),
-    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} stepLabel="재무팀" shares={shares} judgmentInput={judgmentInput} /> },
+    { key: 'profit', title: '수익성 검증', body: <ProfitabilityCard data={profData} stepLabel="재무팀" shares={shares} judgmentInput={judgmentInput} {...aiProps} /> },
   ]
   const contractItems: CheckItem[] = [
     ...revisionItem,
@@ -530,10 +557,17 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
             <Card.Title>다음 행동</Card.Title>
           </Card.Header>
           <Card.Content className="flex flex-col gap-4">
-            {waiting.length === 0 && !hasMyAction && (
+            {canRevise && (
+              <p className="border border-primary px-3 py-2 t-small" style={{ borderRadius: 2 }}>
+                계약 조건이 바뀌었나요? 승인 뒤 최종 종결 전이라서, 바로 아래 <b>수정 보고</b>에서 승인권자에게 다시 보고할 수 있어요.
+              </p>
+            )}
+            {candidate && <CandidateBadge caseId={c.id} label={groupLabel(groupKey(candidate))} addedBy={`${candidate.addedBy} 추가`} canRemove={user.authenticated && user.roles.length > 0} />}
+            {waiting.length === 0 && !hasMyAction && !candidate && (
               <p className="t-small">{c.status === 'closed' || c.status === 'approved' ? '이 안건의 처리가 끝났어요.' : '지금 처리 중인 단계가 없어요.'}</p>
             )}
-            {financeTask && (
+            {/* 이미 후보로 들어가 있으면 처리 버튼(후보로 넣기)은 숨기고, 위 안내와 "후보에서 빼기"만 보여 준다 */}
+            {financeTask && !candidate && (
               <FinanceReferItems
                 caseId={c.id}
                 items={financeItems}
@@ -547,14 +581,14 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
               />
             )}
             <NumberedList
-              start={financeTask ? 3 : 1}
+              start={financeTask && !candidate ? 3 : 1}
               items={[
                 ...othersWorking.map((w, i) => ({
                   key: `wait${i}`,
                   title: <>지금 <strong>{w.lane}</strong>에서 <strong>{w.step}</strong>을(를) 처리하고 있어요.</>,
                 })),
-                ...(myDecision && pending
-                  ? [{ key: 'decide', title: pending.kind === 'nonrenewal' ? '계약 미갱신 통지서 승인' : '승인 결정', body: <div className="flex flex-col gap-3">{decisionEvidence}<DecisionPanel approvalId={pending.id} requiredLabel={roleLabel(pending.requiredRole)} allowed myRoles={myRoles} warning={pending.kind === 'nonrenewal' ? null : warning} reviewWarning={reviewWarning} kind={pending.kind} isContract={c.caseType !== EXPANSION_CASE_TYPE} /></div> }]
+                ...(myDecision && pending && !candidate
+                  ? [{ key: 'decide', title: pending.kind === 'nonrenewal' ? '계약 미갱신 통지서 승인' : '승인 결정', body: <div className="flex flex-col gap-3">{decisionEvidence}<DecisionPanel caseId={c.id} requiredLabel={roleLabel(pending.requiredRole)} allowed myRoles={myRoles} warning={pending.kind === 'nonrenewal' ? null : warning} reviewWarning={reviewWarning} kind={pending.kind} isContract={c.caseType !== EXPANSION_CASE_TYPE} /></div> }]
                   : []),
                 ...myInfo.map((t) => ({
                   key: `info${t.id}`,
@@ -571,7 +605,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
                     </div>
                   ),
                 })),
-                ...myTasks.filter((t) => String(t.detail.key ?? '') !== 'collect-performance').map((t) => {
+                ...myTasks.filter((t) => String(t.detail.key ?? '') !== 'collect-performance' && !(candidate && String(t.detail.key ?? '') === 'confirm-terms')).map((t) => {
                   if (String(t.detail.key ?? '') === 'confirm-terms') {
                     return { key: `task${t.id}`, title: '계약 조건·기한 확인 — 항목마다 확인하고 체크하세요', body: <ContractReferPanel caseId={c.id} items={contractItems} files={caseFiles.filter((f) => f.kind === 'contract')} warning={warning} missing={contractMissing} teams={REWORK_TARGETS['confirm-terms']} nextLabel={approverName} /> }
                   }
@@ -632,7 +666,7 @@ export async function CaseDetail({ caseId }: { caseId: number }) {
           <Card>
             <Card.Header>
               <Card.Title>수정 보고</Card.Title>
-              <Card.Description>승인 또는 부결 뒤 사정이 바뀌어 금액만 달라질 때 다시 보고해요. 원래 금액과 첨부는 그대로 두고, 바뀐 금액과 추가 첨부를 더해요. 이후 판단은 바뀐 금액을 기준으로 해요.</Card.Description>
+              <Card.Description>승인 뒤 최종 종결 전에 계약 조건이 바뀌면 여기서 승인권자에게 다시 보고해요(마케팅 · 계약 담당). 원래 금액과 첨부는 그대로 두고, 바뀐 금액과 추가 첨부를 더해요. 금액은 그대로이고 조건(지급일·기간 등)만 바뀌었다면 같은 금액으로 두고 사유에 바뀐 내용을 적어요. 이후 판단은 바뀐 금액을 기준으로 해요.</Card.Description>
             </Card.Header>
             <Card.Content className="flex flex-col gap-4">
               {revisions.length > 0 && (

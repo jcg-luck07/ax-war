@@ -1,6 +1,7 @@
 import { AiJudgmentPanel } from '@/components/AiJudgmentPanel'
 import { fmtWon } from '@/lib/app/format'
 import type { JudgmentInput } from '@/lib/modules/w02/judgment-input'
+import type { SavedJudgment } from '@/lib/modules/w02/ai-store'
 import type { MetricSet, ProfitabilityData, ShareCompare } from '@/lib/modules/w02/profitability'
 
 // 수익성 검증 — 판단자가 의사결정을 쉽게 내리도록: ① 지표 비교표(공헌이익 줄은 색을 달리해 강조) ② AI 판단.
@@ -11,12 +12,12 @@ const times = (v: number | null) => (v === null ? '—' : `${v.toFixed(2)}배`)
 const ROWS: { key: keyof MetricSet; label: string; fmt: (m: MetricSet) => string; strong?: boolean; rankKey?: 'cp' | 'cpRate' | 'poas' | 'roas' }[] = [
   { key: 'cp', label: '실질 공헌이익', fmt: (m) => fmtWon(m.cp), strong: true, rankKey: 'cp' },
   { key: 'cpRate', label: '공헌이익률 (공헌이익 ÷ 순매출)', fmt: (m) => pct(m.cpRate), rankKey: 'cpRate' },
-  { key: 'poas', label: '실질 ROAS = POAS (공헌이익 ÷ 광고비)', fmt: (m) => times(m.poas), rankKey: 'poas' },
+  { key: 'poas', label: '실질 ROAS (공헌이익 ÷ 광고비 · 손익분기 0배)', fmt: (m) => times(m.poas), rankKey: 'poas' },
   { key: 'roas', label: '명목 ROAS (GMV ÷ 광고비)', fmt: (m) => times(m.roas), rankKey: 'roas' },
 ]
 
 export function ProfitabilityCard({
-  data, stepLabel, isApprover = false, shares = null, judgmentInput = null,
+  data, stepLabel, isApprover = false, shares = null, judgmentInput = null, caseId, aiHash = '', aiSaved = null,
 }: {
   data: ProfitabilityData
   /** 지금 진행 단계를 맡은 부서 이름 (예: 재무팀) */
@@ -27,12 +28,23 @@ export function ProfitabilityCard({
   shares?: ShareCompare | null
   /** Claude 에게 보낼 입력 — 버튼을 누르면 이것으로 묻는다 */
   judgmentInput?: JudgmentInput | null
+  /** AI 판단을 안건마다 저장·재사용하기 위한 값 (안건 번호, 지금 판단 자료의 해시, 저장된 판단) */
+  caseId?: number
+  aiHash?: string
+  aiSaved?: SavedJudgment | null
 }) {
   return (
     <div className="flex flex-col gap-3">
       <p className="t-caption">
         {data.subjectName} · 대상 값은 <strong>{data.basis ?? '자료 없음'}</strong> 기준이에요{data.basis === '제출 추정' ? ' (팀원이 넣은 추정값)' : data.basis === '기존 실적' ? ' (원본 자료로 계산)' : ''}.
       </p>
+
+      {data.estimateMissing.length > 0 && data.missing.length === 0 && (
+        <div className="flex flex-col gap-1 border border-danger p-2" style={{ borderRadius: 2 }}>
+          <p className="t-small font-semibold text-danger">제출한 추계서의 공헌이익은 계산할 수 없어서 제외했어요</p>
+          <p className="t-small">비어 있는 칸: {data.estimateMissing.join(', ')}. 0원으로 보고 계산하지 않았고, 아래 표의 비교·순위·AI 판단에는 쓰지 않았어요(표의 값은 기존 실적 기준이에요). 마케팅팀에 빈 칸을 보완해 달라고 요청하세요.</p>
+        </div>
+      )}
 
       {data.missing.length > 0 ? (
         <div className="flex flex-col gap-1 border border-danger p-2" style={{ borderRadius: 2 }}>
@@ -86,7 +98,10 @@ export function ProfitabilityCard({
 
       {shares && shares.rows.length > 0 && <ShareTable shares={shares} />}
 
-      {data.missing.length === 0 && judgmentInput && <AiJudgmentPanel input={judgmentInput} />}
+      {data.missing.length === 0 && judgmentInput && caseId !== undefined && (
+        // key: 다른 안건을 열거나 저장된 판단·자료가 바뀌면 칸을 새로 만든다 (이전 안건의 판단이 남아 보이지 않도록)
+        <AiJudgmentPanel key={`${caseId}:${aiHash}:${aiSaved?.createdAt ?? ''}`} caseId={caseId} input={judgmentInput} currentHash={aiHash} saved={aiSaved} />
+      )}
     </div>
   )
 }

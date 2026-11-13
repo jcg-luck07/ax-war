@@ -21,11 +21,13 @@ export interface TableRow {
   href: string
   selected: boolean
   cells: Record<string, string>
+  /** 칸마다 덧붙일 글자 모양 (예: 마감이 4주 이내인 계약 체결 기한은 빨간색) */
+  cellClass?: Record<string, string>
 }
 
 const MIN = 56
 
-export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-widths-v1' }: { columns: TableColumn[]; rows: TableRow[]; emptyText: string; storageKey?: string }) {
+export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-widths-v1', plainHeader = false }: { columns: TableColumn[]; rows: TableRow[]; emptyText: string; storageKey?: string; /** true 면 열 제목을 눌러도 정렬되지 않는다 (글자만 보여 준다) */ plainHeader?: boolean }) {
   const STORE = storageKey
   const [widths, setWidths] = useState<Record<string, number>>(() => Object.fromEntries(columns.map((c) => [c.key, c.defaultWidth])))
   const drag = useRef<{ key: string; startX: number; startW: number } | null>(null)
@@ -59,9 +61,13 @@ export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-
                 className={`relative border-b border-r border-default px-3 py-1.5 font-semibold ${c.align === 'right' ? 'text-right' : 'text-left'}`}
                 aria-sort={c.sortDir ? (c.sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
               >
-<Link href={c.sortHref} scroll={false} className="flex items-center gap-1 whitespace-nowrap" title={c.label}>
-                  <span className="min-w-0 truncate">{c.label}</span><span className="t-caption shrink-0">{c.sortDir ? (c.sortDir === 'asc' ? '▲' : '▼') : ''}</span>
-                </Link>
+{plainHeader ? (
+                  <span className="flex items-center gap-1 whitespace-nowrap" title={c.label}><span className="min-w-0 truncate">{c.label}</span></span>
+                ) : (
+                  <Link href={c.sortHref} scroll={false} className="flex items-center gap-1 whitespace-nowrap" title={c.label}>
+                    <span className="min-w-0 truncate">{c.label}</span><span className="t-caption shrink-0">{c.sortDir ? (c.sortDir === 'asc' ? '▲' : '▼') : ''}</span>
+                  </Link>
+                )}
                 {/* 열 경계: 끌어서 폭 조절, 더블클릭하면 처음 폭 */}
                 <span
                   role="separator"
@@ -97,7 +103,7 @@ export function CaseTable({ columns, rows, emptyText, storageKey = 'cases-table-
             <tr key={r.id} className={`border-b border-default align-top ${r.selected ? 'bg-primary-soft' : 'hover:bg-surface'}`} aria-selected={r.selected}>
               {columns.map((c) => (
                 <td key={c.key} className={`border-r border-default p-0 ${c.key === 'title' ? 'font-semibold' : ''} ${c.align === 'right' ? 'text-right' : ''}`}>
-                  <Link href={r.href} scroll={false} className="block truncate whitespace-nowrap px-3 py-1.5" title={r.cells[c.key] ?? ''}>{r.cells[c.key] ?? ''}</Link>
+                  <Link href={r.href} scroll={false} className={`block truncate whitespace-nowrap px-3 py-1.5 ${r.cellClass?.[c.key] ?? ''}`} title={r.cells[c.key] ?? ''}>{r.cells[c.key] ?? ''}</Link>
                 </td>
               ))}
             </tr>

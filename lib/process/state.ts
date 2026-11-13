@@ -3,7 +3,7 @@ import type { EdgeState, FlowDef, FlowNode, NodeState, Outcome } from './types'
 
 /** 엔진의 CaseView 중 이 계산에 필요한 부분만 (엔진을 import 하지 않기 위한 최소 모양) */
 export interface FlowView {
-  case: { status: string; authority: string | null }
+  case: { status: string; authority: string | null; payload?: { group300Excluded?: unknown } }
   approvals: { status: string; requiredRole: string; kind?: string }[]
   tasks: { taskType: string; status: string; title: string; assigneeRole: string | null; detail: Record<string, unknown> }[]
   events: { eventType: string }[]
@@ -32,6 +32,8 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
   const status = v.case.status
 
   const gateOpen = v.tasks.some((t) => t.status === 'open' && t.detail.gate === 'pre-approval')
+  // 그룹 300억 대상 안건에서 CEO/이사회가 부결해 대상에서 빠진 경우 (그 뒤 결정은 일반 승인 규칙의 승인권자)
+  const excluded = Boolean(v.case.payload?.group300Excluded)
 
   const nodeState = (n: FlowNode): NodeState => {
     const b = n.bind
@@ -51,6 +53,12 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
         return hasEval ? 'done' : 'todo' // 이 단계가 생기기 전에 접수된 안건은 끝난 것으로 본다
       }
       case 'decision':
+        if (excluded) return 'done' // CEO/이사회가 부결해 300억 배분 대상에서 빠졌다 — 이어서 재결정
+        if (pending) return gateOpen ? 'blocked' : 'current'
+        if (outcome) return 'done'
+        return 'blocked'
+      case 'decision2':
+        if (!excluded) return 'todo'
         if (pending) return gateOpen ? 'blocked' : 'current'
         if (outcome) return 'done'
         return 'blocked'
@@ -92,7 +100,12 @@ export function deriveFlowState(def: FlowDef, v: FlowView): FlowState {
   for (const e of def.edges) {
     const from = nodes[e.from], to = nodes[e.to]
     let s: EdgeState = 'normal'
-    if (e.when) {
+    if (e.from === 'decide' && def.nodes.some((n) => n.id === 'redecide')) {
+      // 300억 흐름: CEO 결정의 부결은 곧 재결정으로 이어진다. 재결정으로 넘어간 뒤에는 CEO 의 다른 갈래가 아니다.
+      s = excluded ? (e.to === 'redecide' ? 'taken' : 'dim') : outcome === null ? 'normal' : outcome === e.when ? 'taken' : 'dim'
+    } else if (e.from === 'redecide') {
+      s = !excluded ? 'dim' : outcome === null ? 'normal' : outcome === e.when ? 'taken' : 'dim'
+    } else if (e.when) {
       s = outcome === null ? 'normal' : outcome === e.when ? 'taken' : 'dim'
     } else if (from === 'skipped' || to === 'skipped') {
       s = 'dim'

@@ -9,7 +9,7 @@ export interface MetricSet {
   cp: number
   /** 공헌이익률 = 공헌이익 ÷ 순매출 */
   cpRate: number | null
-  /** 실질 ROAS = POAS = 공헌이익 ÷ 광고비 */
+  /** 실질 ROAS = 공헌이익 ÷ 광고비. 공헌이익이 이미 광고비를 뺀 값이라 손익분기는 0배다 (흔히 쓰는 POAS = 광고비 전 이익 ÷ 광고비 와는 "POAS = 실질 ROAS + 1" 관계) */
   poas: number | null
   /** 명목 ROAS = GMV ÷ 광고비 */
   roas: number | null
@@ -47,6 +47,8 @@ export interface ProfitabilityData {
   feeMix: { fixed: number; perf: number; mixed: number } | null
   /** 공헌이익을 구하는 데 필요한 자료가 없을 때 그 목록 (비어 있어야 판단할 수 있다) */
   missing: string[]
+  /** 제출한 추계서에 비어 있는 칸이 있어 "제출 추정" 공헌이익을 계산하지 못했다면 그 칸 목록 — 이 값은 비교·순위·AI 판단에 쓰지 않는다. (기존 실적으로 계산한 값은 영향 없음) */
+  estimateMissing: string[]
 }
 
 export function metricsOf(l: PerfLine): MetricSet {
@@ -92,6 +94,8 @@ export interface BuildArgs {
   influencers: { id: string; name: string; feeType: string | null }[]
   /** 팀원이 제출 때 입력한 추계서 값 — 기존 실적이 없을 때 대상 값으로 쓴다 */
   estimate?: Estimate | null
+  /** 제출 추계서의 비어 있는 칸 (있으면 estimate 는 null 이어야 한다 — 0 으로 채워 계산하지 않는다) */
+  estimateMissing?: string[]
 }
 
 const lineOfEstimate = (e: Estimate): PerfLine => ({
@@ -199,7 +203,7 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const subjectFeeType = feeOf.get(a.influencerId) ?? null
   const base: ProfitabilityData = {
     kind: a.kind, subjectName: '', basis: null, columns: [], groups: [], percentile: null, rank: null, ranks: null, spendShare: null,
-    subjectFeeType, feeMix: null, missing: [],
+    subjectFeeType, feeMix: null, missing: [], estimateMissing: a.estimateMissing ?? [],
   }
 
   if (a.kind === 'influencer') {
@@ -209,7 +213,7 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
     const line = inf ?? (a.estimate ? lineOfEstimate(a.estimate) : null)
     base.basis = inf ? '기존 실적' : a.estimate ? '제출 추정' : null
     if (!line) {
-      base.missing.push('이 인플루언서의 기존 캠페인 실적과 제출 추계서가 모두 없어요')
+      base.missing.push(base.estimateMissing.length > 0 ? `제출한 추계서에 비어 있는 칸(${base.estimateMissing.join(', ')})이 있어 예상 공헌이익을 계산할 수 없고, 이 인플루언서의 기존 캠페인 실적도 없어요` : '이 인플루언서의 기존 캠페인 실적과 제출 추계서가 모두 없어요')
       return base
     }
     const m = metricsOf(line)
@@ -247,7 +251,7 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const used = line ?? (a.estimate ? lineOfEstimate(a.estimate) : null)
   base.basis = line ? '기존 실적' : a.estimate ? '제출 추정' : null
   if (!used) {
-    base.missing.push('이 캠페인의 기존 실적과 제출 추계서가 모두 없어요')
+    base.missing.push(base.estimateMissing.length > 0 ? `제출한 추계서에 비어 있는 칸(${base.estimateMissing.join(', ')})이 있어 예상 공헌이익을 계산할 수 없고, 이 캠페인의 기존 실적도 없어요` : '이 캠페인의 기존 실적과 제출 추계서가 모두 없어요')
     return base
   }
   const all = (perf?.byCampaign ?? []).filter((x) => x.campaignId !== a.campaignId)

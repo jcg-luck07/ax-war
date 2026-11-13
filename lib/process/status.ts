@@ -34,8 +34,13 @@ export function stateText(def: FlowDef | undefined, st: FlowState | null, caseSt
   if (cur) {
     const more = st.current.length > 1 ? ` 외 ${st.current.length - 1}` : ''
     const b = cur.bind
-    if (b.t === 'prep') return mk(b.key === 'confirm-terms' ? '계약 담당 확인 필요' : '재무팀 검토 필요', '', more)
+    if (b.t === 'prep') {
+      // 그룹 300억 대상 안건은 앞 단계가 끝나면 CEO/이사회가 결정한다 — 승인권자가 정해져 있다는 것을 상태에 함께 보여 준다
+      const next = def.nodes.some((n) => n.id === 'redecide') && st.nodes.decide === 'blocked' ? `이후 ${approverLabel} 결정 (300억)` : ''
+      return mk(b.key === 'confirm-terms' ? '계약 담당 확인 필요' : '재무팀 검토 필요', next, more)
+    }
     if (b.t === 'decision') return mk('승인 필요', approverLabel, more)
+    if (b.t === 'decision2') return mk('승인 필요', `${approverLabel} (300억 제외 후 재결정)`, more)
     if (b.t === 'approval2') return mk('부결', `${approverLabel} ${cur.label}`, more)
     const who = LANE_NAME[cur.lane] ?? (cur.lane === 'approver' ? approverLabel : cur.lane)
     // 결정 뒤 후속 작업: 승인 → 후속 작업, 부결 → 부결(후속 처리 중), 재검토 → 재검토
