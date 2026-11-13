@@ -3,7 +3,7 @@ import { buttonVariants } from '@heroui/react'
 import { APP_NAME, isAxhubConfigured, loginUrl, logoutUrl, me } from '@/lib/axhub-server'
 import { Shell } from './Shell'
 import { DevAccountSwitcher } from './DevAccountSwitcher'
-import { DEV_ACCOUNTS, DEV_COOKIE, canSeeCash, currentUser } from '@/lib/app/auth'
+import { DEV_ACCOUNTS, DEV_COOKIE, canSeeCash, currentUser, demoAccountsEnabled } from '@/lib/app/auth'
 import { cookies } from 'next/headers'
 
 /**
@@ -24,7 +24,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
   const user = await currentUser()
   const devId = (await cookies()).get(DEV_COOKIE)?.value ?? DEV_ACCOUNTS.find((a) => a.name === user.name)?.id ?? DEV_ACCOUNTS[0].id
 
-  const account = process.env.NODE_ENV !== 'production' ? (
+  const account = demoAccountsEnabled() ? (
     <DevAccountSwitcher accounts={DEV_ACCOUNTS.map((a) => ({ id: a.id, label: a.label }))} current={devId} />
   ) : visitor.authenticated ? (
     <>
@@ -46,7 +46,7 @@ export async function AppShell({ children }: { children: ReactNode }) {
   )
 
   return (
-    <Shell appName={APP_NAME} account={account} isAdmin={process.env.NODE_ENV === 'production' ? visitor.is_admin : user.isAdmin} seesCash={canSeeCash(user)}>
+    <Shell appName={APP_NAME} account={account} isAdmin={demoAccountsEnabled() ? user.isAdmin : visitor.is_admin} seesCash={canSeeCash(user)}>
       {children}
     </Shell>
   )

@@ -33,6 +33,9 @@ export const DEV_ACCOUNTS: { id: string; name: string; label: string; roles: str
 ]
 export const DEV_COOKIE = 'dev_account'
 
+/** 시연용 계정 전환을 쓰는가. 로컬은 항상, 배포본도 기본으로 쓴다(axhub 로그인 없이 6개 역할을 오가며 시연). AXHUB_LOGIN=1 이면 배포본에서 axhub 로그인 방식으로 되돌린다. */
+export const demoAccountsEnabled = () => process.env.NODE_ENV !== 'production' || process.env.AXHUB_LOGIN !== '1'
+
 async function devAccountId(): Promise<string | null> {
   try {
     const { cookies } = await import('next/headers')
@@ -43,7 +46,7 @@ async function devAccountId(): Promise<string | null> {
 }
 
 export async function currentUser(sqlArg?: Sql): Promise<AppUser> {
-  if (process.env.NODE_ENV !== 'production') {
+  if (demoAccountsEnabled()) {
     const devId = await devAccountId()
     const acc = DEV_ACCOUNTS.find((a) => a.id === devId)
     if (acc) return { authenticated: true, email: `${acc.id}@local`, name: acc.name, roles: acc.roles, isAdmin: false }

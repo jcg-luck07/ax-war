@@ -7,7 +7,7 @@ import {
   EngineError, completeTask, decide, getCaseView, provideInfo, resubmitCase, updateFacts, type Outcome,
 } from '@/lib/engine/engine'
 import { AS_OF, getEngine, roleLabel } from '@/lib/app/engine'
-import { DEV_ACCOUNTS, DEV_COOKIE, canAcceptCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
+import { DEV_ACCOUNTS, DEV_COOKIE, demoAccountsEnabled, canAcceptCategory, canHandle, canWork, currentUser, decidingRole, roleLabels, type AppUser } from '@/lib/app/auth'
 import { acceptSubmission, categoryById, returnSubmission } from '@/lib/modules/intake/submissions'
 import { contractRefer, financeRefer, requestNonrenewalApproval, requestRework } from '@/lib/modules/w02/handoff'
 import { beyondGroupFundPeriod } from '@/lib/modules/w02/group-fund'
@@ -296,7 +296,7 @@ export async function removeUserAction(input: { email: string }) {
 // ───────── 로컬 시험용 계정 전환 (배포본에서는 동작하지 않는다) ─────────
 
 export async function switchDevAccountAction(id: string) {
-  if (process.env.NODE_ENV === 'production') return { ok: false, message: '배포본에서는 계정을 바꿀 수 없어요.' }
+  if (!demoAccountsEnabled()) return { ok: false, message: '이 배포본에서는 계정을 바꿀 수 없어요.' }
   if (!DEV_ACCOUNTS.some((a) => a.id === id)) return { ok: false, message: '알 수 없는 계정이에요.' }
   const { cookies } = await import('next/headers')
   ;(await cookies()).set(DEV_COOKIE, id, { path: '/', httpOnly: true, sameSite: 'lax' })
