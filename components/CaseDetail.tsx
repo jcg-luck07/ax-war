@@ -176,7 +176,16 @@ export async function CaseDetail({ caseId, profitOnly }: { caseId: number; /** �
     entityRows(sql, MASIL_MODEL, 'campaign').catch(() => []),
     entityRows(sql, MASIL_MODEL, 'influencer').catch(() => []),
   ])
+  // 같은 기안서에 들어 있는 같은 종류의 다른 안건 — 수익성 비교는 이 안건들끼리만 한다 (다른 기안서·원본 기안서의 안건과 섞지 않는다)
+  const peerRows = await sql<{ subject_refs: Record<string, string> }[]>`
+    SELECT p.subject_refs FROM decision_cases p JOIN decision_cases m ON m.draft_id = p.draft_id
+    WHERE m.id = ${c.id} AND p.id <> ${c.id} AND p.case_type = ${c.caseType}`
+  const peers = peerRows.length === 0 ? null : {
+    campaignIds: peerRows.map((r) => String(r.subject_refs?.campaign ?? '')).filter(Boolean),
+    influencerIds: peerRows.map((r) => String(r.subject_refs?.influencer ?? '')).filter((x) => x && x !== 'NONE'),
+  }
   const profData = buildProfitability({
+    peers,
     kind: c.caseType === EXPANSION_CASE_TYPE ? 'campaign' : 'influencer',
     influencerId: String(c.subjectRefs.influencer ?? ''),
     campaignId: c.subjectRefs.campaign ? String(c.subjectRefs.campaign) : undefined,

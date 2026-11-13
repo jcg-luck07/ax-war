@@ -49,6 +49,8 @@ export interface ProfitabilityData {
   missing: string[]
   /** 제출한 추계서에 비어 있는 칸이 있어 "제출 추정" 공헌이익을 계산하지 못했다면 그 칸 목록 — 이 값은 비교·순위·AI 판단에 쓰지 않는다. (기존 실적으로 계산한 값은 영향 없음) */
   estimateMissing: string[]
+  /** 비교 범위 — 'draft': 같은 기안서에 들어 있는 다른 안건끼리만 / 'all': 원본 자료의 전체 (같은 기안서에 비교할 안건이 없을 때) */
+  scope: 'draft' | 'all'
 }
 
 export function metricsOf(l: PerfLine): MetricSet {
@@ -96,6 +98,8 @@ export interface BuildArgs {
   estimate?: Estimate | null
   /** 제출 추계서의 비어 있는 칸 (있으면 estimate 는 null 이어야 한다 — 0 으로 채워 계산하지 않는다) */
   estimateMissing?: string[]
+  /** 같은 기안서에 들어 있는 이 안건 말고 다른 안건들의 대상. 비어 있지 않으면 비교를 이 안건들끼리로 좁힌다 (없거나 비어 있으면 전체와 비교) */
+  peers?: { campaignIds: string[]; influencerIds: string[] } | null
 }
 
 const lineOfEstimate = (e: Estimate): PerfLine => ({
@@ -203,12 +207,17 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
   const subjectFeeType = feeOf.get(a.influencerId) ?? null
   const base: ProfitabilityData = {
     kind: a.kind, subjectName: '', basis: null, columns: [], groups: [], percentile: null, rank: null, ranks: null, spendShare: null,
-    subjectFeeType, feeMix: null, missing: [], estimateMissing: a.estimateMissing ?? [],
+    subjectFeeType, feeMix: null, missing: [], estimateMissing: a.estimateMissing ?? [], scope: 'all',
   }
 
   if (a.kind === 'influencer') {
     const inf = perf?.byInfluencer.find((x) => x.influencerId === a.influencerId)
-    const others = (perf?.byInfluencer ?? []).filter((x) => x.influencerId !== a.influencerId)
+    const everyone = (perf?.byInfluencer ?? []).filter((x) => x.influencerId !== a.influencerId)
+    // 같은 기안서에 다른 인플루언서 안건이 있으면 그 인플루언서들끼리만 비교한다
+    const peerInf = new Set(a.peers?.influencerIds ?? [])
+    const scoped = peerInf.size > 0 ? everyone.filter((x) => peerInf.has(x.influencerId)) : []
+    const others = scoped.length > 0 ? scoped : everyone
+    base.scope = scoped.length > 0 ? 'draft' : 'all'
     base.subjectName = nameOf.get(a.influencerId) ?? a.influencerId
     const line = inf ?? (a.estimate ? lineOfEstimate(a.estimate) : null)
     base.basis = inf ? '기존 실적' : a.estimate ? '제출 추정' : null
@@ -221,12 +230,13 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
     const sorted = [...others].sort((x, y) => y.contributionProfit - x.contributionProfit)
     base.columns = [{ label: '이 인플루언서', sub: base.basis ?? undefined, m }]
     if (avg) {
-      base.columns.push({ label: '다른 인플루언서 평균', sub: `${others.length}명`, m: avg })
-      base.groups.push({ key: 'others', label: '다른 인플루언서 평균', short: '다른 인플루언서', n: others.length, m: avg })
+      const lbl = base.scope === 'draft' ? '같은 기안서의 다른 인플루언서 평균' : '다른 인플루언서 평균'
+      base.columns.push({ label: lbl, sub: `${others.length}명`, m: avg })
+      base.groups.push({ key: 'others', label: lbl, short: base.scope === 'draft' ? '같은 기안서의 다른 인플루언서' : '다른 인플루언서', n: others.length, m: avg })
       const best = sorted[0], worst = sorted[sorted.length - 1]
       if (others.length >= 3) {
-        base.columns.push({ label: `최고 (${best.influencerName})`, sub: '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(best) })
-        base.columns.push({ label: `최저 (${worst.influencerName})`, sub: '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(worst) })
+        base.columns.push({ label: `최고 (${best.influencerName})`, sub: base.scope === 'draft' ? '같은 기안서 안에서 공헌이익 기준' : '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(best) })
+        base.columns.push({ label: `최저 (${worst.influencerName})`, sub: base.scope === 'draft' ? '같은 기안서 안에서 공헌이익 기준' : '공헌이익 기준 (이 인플루언서 제외)', m: metricsOf(worst) })
       }
     }
     const p = percentileOf(line.contributionProfit, others.map((x) => x.contributionProfit))
@@ -254,7 +264,12 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
     base.missing.push(base.estimateMissing.length > 0 ? `제출한 추계서에 비어 있는 칸(${base.estimateMissing.join(', ')})이 있어 예상 공헌이익을 계산할 수 없고, 이 캠페인의 기존 실적도 없어요` : '이 캠페인의 기존 실적과 제출 추계서가 모두 없어요')
     return base
   }
-  const all = (perf?.byCampaign ?? []).filter((x) => x.campaignId !== a.campaignId)
+  const everyCamp = (perf?.byCampaign ?? []).filter((x) => x.campaignId !== a.campaignId)
+  // 같은 기안서에 다른 캠페인 안건이 있으면 그 캠페인들끼리만 비교한다 (원본 기안서의 안건과 섞지 않는다)
+  const peerCamp = new Set(a.peers?.campaignIds ?? [])
+  const scopedCamp = peerCamp.size > 0 ? everyCamp.filter((x) => peerCamp.has(x.campaignId)) : []
+  const all = scopedCamp.length > 0 ? scopedCamp : everyCamp
+  base.scope = scopedCamp.length > 0 ? 'draft' : 'all'
   const productOf = new Map(a.campaigns.map((c) => [c.id, c.productLine]))
   const sameInf = all.filter((x) => x.influencerId === a.influencerId)
   const sameType = camp
@@ -267,9 +282,9 @@ export function buildProfitability(a: BuildArgs): ProfitabilityData {
     base.columns.push({ label, sub: `${list.length}건`, m })
     base.groups.push({ key, label, short, n: list.length, m })
   }
-  add('sameInfluencer', '같은 인플루언서의 다른 캠페인 평균', '같은 인플루언서의 다른 캠페인', sameInf)
-  add('all', '전체 캠페인 평균 (이 안건 제외)', '전체 캠페인', all)
-  add('sameType', `같은 종류(${camp?.productLine ?? '-'}) · 다른 인플루언서 평균`, `같은 종류(${camp?.productLine ?? '-'}) 타 인플루언서 캠페인`, sameType)
+  add('sameInfluencer', base.scope === 'draft' ? '같은 기안서 · 같은 인플루언서의 다른 캠페인 평균' : '같은 인플루언서의 다른 캠페인 평균', '같은 인플루언서의 다른 캠페인', sameInf)
+  add('all', base.scope === 'draft' ? '같은 기안서의 다른 캠페인 평균' : '전체 캠페인 평균 (이 안건 제외)', base.scope === 'draft' ? '같은 기안서의 다른 캠페인' : '전체 캠페인', all)
+  add('sameType', `${base.scope === 'draft' ? '같은 기안서 · ' : ''}같은 종류(${camp?.productLine ?? '-'}) · 다른 인플루언서 평균`, `같은 종류(${camp?.productLine ?? '-'}) 타 인플루언서 캠페인`, sameType)
   const p = percentileOf(used.contributionProfit, all.map((x) => x.contributionProfit))
   base.rank = { cp: p.rank, n: p.n }
   base.percentile = p.pct

@@ -36,7 +36,8 @@ export function ProfitabilityCard({
   return (
     <div className="flex flex-col gap-3">
       <p className="t-caption">
-        {data.subjectName} · 대상 값은 <strong>{data.basis ?? '자료 없음'}</strong> 기준이에요{data.basis === '제출 추정' ? ' (팀원이 넣은 추정값)' : data.basis === '기존 실적' ? ' (원본 자료로 계산)' : ''}.
+        {data.subjectName} · 대상 값은 <strong>{data.basis ?? '자료 없음'}</strong> 기준이에요{data.basis === '제출 추정' ? ' (팀원이 넣은 추정값)' : data.basis === '기존 실적' ? ' (원본 자료로 계산)' : ''}.{' '}
+        비교는 <strong>{data.scope === 'draft' ? '같은 기안서에 들어 있는 다른 안건끼리' : '원본 자료의 전체 대상과'}</strong> 했어요.
       </p>
 
       {data.estimateMissing.length > 0 && data.missing.length === 0 && (

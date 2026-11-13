@@ -128,6 +128,19 @@ try {
     assert.equal(e.basis, '기존 실적'); assert.deepEqual(e.estimateMissing, ['예상 GMV']); assert.equal(e.missing.length, 0)
   })
 
+  await t('비교 범위: 같은 기안서에 다른 안건이 있으면 그 안건끼리만 비교하고, 없으면 전체와 비교한다', () => {
+    const all = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-1' })
+    assert.equal(all.scope, 'all'); assert.equal(all.groups.find((g) => g.key === 'all').n, 4)
+    const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-1', peers: { campaignIds: ['CMP-3', 'CMP-5'], influencerIds: [] } })
+    assert.equal(d.scope, 'draft'); const g = d.groups.find((x) => x.key === 'all')
+    assert.equal(g.n, 2); assert.match(g.label, /같은 기안서/); assert.equal(d.rank.n, 3)
+    // 같은 기안서의 안건이 비교 가능한 실적이 없으면 전체로 되돌린다
+    const none = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-1', peers: { campaignIds: ['CMP-X'], influencerIds: [] } })
+    assert.equal(none.scope, 'all')
+    const i = buildProfitability({ ...base, kind: 'influencer', influencerId: 'INF-001', peers: { campaignIds: [], influencerIds: ['INF-002', 'INF-003'] } })
+    assert.equal(i.scope, 'draft'); assert.equal(i.groups[0].n, 2); assert.equal(i.rank.n, 3)
+  })
+
   await t('자료 누락: 기존 실적도 제출 추계서도 없으면 누락 사유를 돌려준다 (이때는 AI 에게 묻지 않는다)', () => {
     const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-NEW' })
     assert.equal(d.basis, null); assert.ok(d.missing.length > 0)

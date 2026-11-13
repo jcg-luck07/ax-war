@@ -6,6 +6,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import * as E from '@/lib/engine/engine'
 import { getEngine } from '@/lib/app/engine'
 import { fmtWon } from '@/lib/app/format'
+import { applySynDrafts } from './syn-drafts.mjs'
 import { CONTRACT_NOTICE } from '@/lib/modules/w02/contract-notice'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { receiveContractNotice } from '@/lib/modules/w02/intake'
@@ -87,6 +88,7 @@ for (const r of readCsv('syn_contract_notices.csv')) {
 const have = new Set((await sql`SELECT input->>'memo' AS n FROM submissions WHERE submitted_by LIKE '[합성]%'`).map((x) => x.n))
 for (const r of readCsv('syn_submissions.csv')) {
   const values = JSON.parse(r.values_json)
+  if (values.currentExpiry && !values.autoRenew) values.autoRenew = '자동 갱신' // 갱신 안건은 자동 갱신 여부가 필수 항목
   if (have.has(values.memo)) { report.push([r.syn_id, '건너뜀(이미 있음)']); continue }
   // 합성데이터/첨부문서/<SYN-id>/ 의 예시 문서를 첨부한다. 파일 이름 앞부분으로 종류를 정한다. 폴더가 없으면 표시만 붙은 짧은 텍스트로 대신한다.
   const KIND_BY_PREFIX = [['기안서', 'draft'], ['비용및성과추계서', 'estimate'], ['계약서', 'contract'], ['판단근거자료', 'custom', '판단 근거 자료'], ['상대방_메일', 'custom', '상대방과 오간 메일']]
@@ -107,6 +109,7 @@ for (const r of readCsv('syn_submissions.csv')) {
   report.push([r.syn_id, '접수 대기', r.scenario])
 }
 
+await applySynDrafts(sql) // 합성 안건을 기안서 5개로 묶는다 (안건마다 기안서가 하나씩 생기지 않게)
 for (const [id, st, sc] of report) console.log(`${id.padEnd(8)} ${st.padEnd(28)} ${sc ?? ''}`)
 console.log(`\n합성 ${report.length}건 처리`)
 await sql.end()
