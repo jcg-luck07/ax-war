@@ -6,7 +6,7 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import * as E from '@/lib/engine/engine'
 import { getEngine } from '@/lib/app/engine'
 import { fmtWon } from '@/lib/app/format'
-import { applySynDrafts } from './syn-drafts.mjs'
+import { applySynDrafts, SYN_DRAFTS } from './syn-drafts.mjs'
 import { CONTRACT_NOTICE } from '@/lib/modules/w02/contract-notice'
 import { EXPANSION_CASE_TYPE } from '@/lib/modules/w02/contract-notice'
 import { receiveContractNotice } from '@/lib/modules/w02/intake'
@@ -48,6 +48,12 @@ if (campaigns.size === 0) throw new Error('원본 복사본이 DB 에 없어요.
 const report = []
 
 // ── 캠페인 확대 기안 ──
+// 기안 요청 총액 = 그 안건이 들어갈 기안서(scripts/syn-drafts.mjs)에 든 확대 안건의 요청 금액 합계
+const planAmount = new Map(readCsv('syn_expansion_plans.csv').map((x) => [x.syn_id, Number(x.requested_budget_krw)]))
+const draftTotal = (synId) => {
+  const group = Object.values(SYN_DRAFTS).find((ids) => ids.includes(synId))
+  return group ? group.reduce((sum, id) => sum + (planAmount.get(id) ?? 0), 0) : planAmount.get(synId) ?? 0
+}
 for (const r of readCsv('syn_expansion_plans.csv')) {
   if (await exists(r.syn_id)) { report.push([r.syn_id, '건너뜀(이미 있음)']); continue }
   const camp = campaigns.get(r.campaign_id)
@@ -59,7 +65,7 @@ for (const r of readCsv('syn_expansion_plans.csv')) {
     deadline: r.contract_deadline,
     subjectRefs: { syn: r.syn_id, plan: r.syn_id, campaign: r.campaign_id, influencer: String(camp.influencer_id) },
     payload: {
-      facts: { per_plan_amount_krw: amount, draft_total_krw: Number(r.draft_total_krw), creates_cash_outflow: true, linked_to_group_300: yn(r.linked_to_group_300) },
+      facts: { per_plan_amount_krw: amount, draft_total_krw: draftTotal(r.syn_id), creates_cash_outflow: true, linked_to_group_300: yn(r.linked_to_group_300) },
       plan: { plan_id: r.syn_id, campaign_id: r.campaign_id, requested_budget_krw: String(amount), expected_gmv_krw: r.expected_gmv_krw, settlement_date: r.settlement_date || null, contract_deadline: r.contract_deadline },
       synthetic: { scenario: r.scenario, reason: r.reason, sourceLink: r.source_link, appliesAt: r.applies_at },
     },

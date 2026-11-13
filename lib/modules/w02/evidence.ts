@@ -66,7 +66,7 @@ export function buildBriefInput(view: CaseView, ctx: EvidenceCtx): BriefInput {
   } else if (c.caseType === EXPANSION_CASE_TYPE) {
     const amount = Number(payload.plan?.requested_budget_krw ?? facts.per_plan_amount_krw ?? 0)
     evidence.push({ label: '요청액', value: fmtWon(amount) })
-    evidence.push({ label: '기안 요청 총액', value: fmtWon(Number(facts.draft_total_krw ?? 0)), note: '25건 합계, 승인 한도 판단 기준' })
+    evidence.push({ label: '기안 요청 총액', value: fmtWon(Number(facts.draft_total_krw ?? 0)), note: '같은 기안서 안건의 요청 합계, 승인 한도 판단 기준' })
     const sd = (facts.settlement_date as string | undefined) ?? payload.plan?.settlement_date
     if (sd) evidence.push({ label: '집행 예정일', value: fmtDateStr(sd) })
     if (facts.in_cash_breach_window === true && ctx.cash?.windows.length) {
