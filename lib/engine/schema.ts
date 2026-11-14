@@ -203,4 +203,16 @@ export async function applyCoreSchema(sql: Sql): Promise<void> {
       loaded_at    timestamptz NOT NULL DEFAULT now()
     )
   `
+
+  // ⑧ 시연용 첨부서류 — 안건 접수 화면에서 내려받아 시연에 쓰는 합성 서류(정상 / 값 누락). 저장소 data/demo 의 파일을 DB 에 올려 둔다.
+  await sql`
+    CREATE TABLE IF NOT EXISTS demo_files (
+      kind         text        NOT NULL,                  -- normal(정상) / exception(데이터 누락)
+      filename     text        NOT NULL,
+      sha256       text        NOT NULL,
+      content      bytea       NOT NULL,
+      loaded_at    timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (kind, filename)
+    )
+  `
 }

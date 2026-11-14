@@ -6,8 +6,10 @@ import { useMemo, useRef, useState, useTransition, type ReactNode } from 'react'
 import { useRouter } from 'next/navigation'
 import { digitsOnly, formatDateInput, formatMoneyInput } from '@/lib/app/date-input'
 import { fmtWon } from '@/lib/app/format'
-import { Button, toast } from '@heroui/react'
+import { Button, buttonVariants, toast } from '@heroui/react'
 import { acceptSubmissionAction, returnSubmissionAction } from '@/app/actions'
+import { findConflicts } from '@/lib/modules/intake/extract-compare'
+import { DEMO_SETS, type DemoKind } from '@/lib/modules/intake/demo-sets'
 import { DEAL_LABEL, DEAL_TYPES, nextCampaignName, uniqueTitle } from '@/lib/app/submission-title'
 import { useConfirm } from '@/components/ax'
 import { CONTRIBUTION_FIELDS, CONTRIBUTION_FORMULA, calcContribution, validateContribution } from '@/lib/metrics/contribution-calc'
@@ -91,7 +93,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
   // 첨부문서를 AI 로 읽어 빈칸 채우기: 채운 칸(이름 → 어디서 읽었는지), 읽은 결과 안내
   const [aiFilled, setAiFilled] = useState<Record<string, string>>({})
   const [reading, setReading] = useState(false)
-  const [aiReport, setAiReport] = useState<{ filled: number; differs: { label: string; typed: string; doc: string }[]; warnings: string[]; skipped: string[]; tokens: string; model: string } | null>(null)
+  const [aiReport, setAiReport] = useState<{ filled: number; differs: { label: string; typed: string; doc: string }[]; conflicts: string[]; warnings: string[]; skipped: string[]; tokens: string; model: string } | null>(null)
   const confirm = useConfirm()
   const cat = categories.find((c) => c.id === catId)
   const isNew = refId === NEW
@@ -206,7 +208,7 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
       }
       if (!r.ok) { toast.danger(r.message ?? '서류를 읽지 못했어요.'); return }
       applyExtracted(cat, r.values ?? {}, r.evidence ?? {})
-      setAiReport((prev) => ({ ...(prev ?? { filled: 0, differs: [], tokens: '', model: '' }), warnings: r.warnings ?? [], skipped: r.skipped ?? [], tokens: `입력 ${(r.inputTokens ?? 0).toLocaleString()} / 출력 ${(r.outputTokens ?? 0).toLocaleString()} 토큰`, model: r.model ?? '' }) as typeof aiReport)
+      setAiReport((prev) => ({ ...(prev ?? { filled: 0, differs: [], conflicts: [], tokens: '', model: '' }), warnings: r.warnings ?? [], skipped: r.skipped ?? [], tokens: `입력 ${(r.inputTokens ?? 0).toLocaleString()} / 출력 ${(r.outputTokens ?? 0).toLocaleString()} 토큰`, model: r.model ?? '' }) as typeof aiReport)
     } catch {
       toast.danger('서류를 읽지 못했어요. 잠시 뒤 다시 시도해 주세요.')
     } finally {
@@ -220,35 +222,40 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
     const marks: Record<string, string> = {}
     const differs: { label: string; typed: string; doc: string }[] = []
     const label = (k: string) => c.fields.find((f) => f.name === k)?.label ?? ({ feeType: '계약 방식', fixedFee: '고정 피 금액', performanceFee: '성과 피 금액', performanceRate: '성과 피 비율', gmv: '예상 GMV', refund: '환불', cogs: '제품 원가', channelFee: '채널 수수료', shipping: '출고(배송)비', returnLogistics: '반품 물류비', memo: '메모', dealType: DEAL_LABEL[c.id], productLine: '제품 종류' } as Record<string, string>)[k] ?? k
+    // 고른 값과 서류가 다른 점(예: 신규로 골랐는데 서류는 기존 캠페인의 확대 기안서) — 고른 값은 바꾸지 않고 지적만 한다
+    const conflicts = findConflicts(c, { refId, isNew, deal }, v, DEAL_LABEL[c.id])
     // 대상 ID: 아직 안 골랐으면 문서의 ID 로 고른다 (목록에 없으면 신규 ID 로)
     let nowNew = isNew
+    const docKnown = Boolean(v.refId && c.options.some((o) => o.id === v.refId))
     if (!refId && v.refId) {
-      const known = c.options.some((o) => o.id === v.refId)
-      if (known) setRefId(v.refId)
-      else if (v.refId.startsWith(c.idPrefix)) {
-        setRefId(NEW); nowNew = true
+      if (docKnown) setRefId(v.refId)
+      else if (v.refId.startsWith(c.idPrefix)) { setRefId(NEW); nowNew = true }
+      if (docKnown || v.refId.startsWith(c.idPrefix)) marks.refId = evidence.refId ?? ''
+    }
+    // 신규 ID 로 가는 경우(방금 정했거나 이미 골라 둔 경우)에도 비어 있는 칸은 서류 값으로 채운다 — 신규 번호·이름·소속 인플루언서·제품 종류
+    if (nowNew) {
+      if (v.refId && !docKnown && v.refId.startsWith(c.idPrefix) && !(vals.newId ?? '').trim()) {
         next.newId = v.refId.slice(c.idPrefix.length).replace(/\D/g, '').slice(0, c.idDigits)
         marks.newId = evidence.refId ?? ''
-        if (c.id === 'influencer' && v.refName && !(vals.refName ?? '').trim()) { next.refName = v.refName; marks.refName = evidence.refName ?? '' }
-        if (c.id === 'campaign') {
-          if (v.parentInfluencerId && !(vals.parentInfluencerId ?? '')) { next.parentInfluencerId = v.parentInfluencerId; marks.parentInfluencerId = evidence.parentInfluencerId ?? '' }
-          if (v.productLine && !(vals.productLine ?? '')) { next.productLine = v.productLine; marks.productLine = evidence.productLine ?? '' }
-        }
       }
-      if (known || v.refId.startsWith(c.idPrefix)) marks.refId = evidence.refId ?? ''
+      if (c.id === 'influencer' && v.refName && !(vals.refName ?? '').trim()) { next.refName = v.refName; marks.refName = evidence.refName ?? '' }
+      if (c.id === 'campaign') {
+        if (v.parentInfluencerId && !(vals.parentInfluencerId ?? '')) { next.parentInfluencerId = v.parentInfluencerId; marks.parentInfluencerId = evidence.parentInfluencerId ?? '' }
+        if (v.productLine && !(vals.productLine ?? '')) { next.productLine = v.productLine; marks.productLine = evidence.productLine ?? '' }
+      }
     }
     const SIMPLE = ['settlementDate', 'contractDeadline', 'currentExpiry', 'autoRenew', 'requested', 'feeType', 'fixedFee', 'performanceFee', 'performanceRate', 'gmv', 'refund', 'cogs', 'channelFee', 'shipping', 'returnLogistics', 'memo', 'dealType']
     for (const k of SIMPLE) {
       const val = v[k]
       if (val === undefined) continue
-      if (k === 'dealType' && nowNew) continue // 새 ID 는 항상 신규
+      if (k === 'dealType' && (nowNew || (vals.dealType ?? '').trim())) continue // 새 ID 는 항상 신규. 이미 고른 구분이 서류와 다르면 위의 "고른 값과 서류가 달라요"로 알린다
       const typed = (vals[k] ?? '').trim()
       if (typed === '') { next[k] = val; marks[k] = evidence[k] ?? '' }
       else if (typed.replace(/,/g, '') !== val) differs.push({ label: label(k), typed, doc: val })
     }
     setVals((s) => ({ ...s, ...next }))
     setAiFilled((a) => ({ ...a, ...marks }))
-    setAiReport({ filled: Object.keys(marks).length, differs, warnings: [], skipped: [], tokens: '', model: '' })
+    setAiReport({ filled: Object.keys(marks).length, differs, conflicts, warnings: [], skipped: [], tokens: '', model: '' })
   }
 
   const send = (cat: NonNullable<typeof categories[number]>) =>
@@ -446,6 +453,24 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
               </Button>
               <span className="t-caption">기안서·추계서 등을 올린 뒤 누르면 비어 있는 칸을 채워요. 이미 적은 칸은 그대로 두고, 채운 칸은 파란 테두리로 보여요 — 꼭 확인하세요.</span>
             </div>
+            {cat.id === 'campaign' && (
+              <div className="flex flex-col gap-1 border border-dashed border-primary bg-primary-soft px-3 py-2" style={{ borderRadius: 2 }}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="t-small font-semibold">시연용</span>
+                  <span className="t-caption">가상(합성) 서류예요. 받아서 압축을 풀고 아래 첨부서류 칸에 올린 뒤 AI 읽기를 시연해 보세요.</span>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  {(Object.keys(DEMO_SETS) as DemoKind[]).map((k) => (
+                    <a key={k} href={`/api/demo-files/${k}`} download className={buttonVariants({ variant: k === 'normal' ? 'secondary' : 'outline', size: 'sm' })} title={DEMO_SETS[k].summary}>
+                      {DEMO_SETS[k].label} 내려받기
+                    </a>
+                  ))}
+                </div>
+                <ul className="list-disc pl-5 t-caption">
+                  {(Object.keys(DEMO_SETS) as DemoKind[]).map((k) => <li key={k}><b>{DEMO_SETS[k].label}</b> — {DEMO_SETS[k].summary}</li>)}
+                </ul>
+              </div>
+            )}
             {aiReport && (
               <div className="flex flex-col gap-1 border border-primary p-2 t-small" style={{ borderRadius: 2 }} role="status">
                 <span><strong>AI 읽기 결과</strong> — {aiReport.filled}개 칸을 채웠어요{aiReport.tokens ? ` (${aiReport.model} · ${aiReport.tokens})` : ''}.</span>
@@ -453,6 +478,12 @@ export function SubmitForm({ categories, kinds }: { categories: CategoryView[]; 
                   <div>
                     <span className="font-semibold">이미 적은 값과 서류의 값이 달라요 (적은 값을 그대로 뒀어요):</span>
                     <ul className="list-disc pl-5">{aiReport.differs.map((d) => <li key={d.label}>{d.label}: 적은 값 {d.typed} · 서류 {d.doc}</li>)}</ul>
+                  </div>
+                )}
+                {aiReport.conflicts.length > 0 && (
+                  <div>
+                    <span className="font-semibold text-danger">고른 값과 서류가 달라요 (고른 값은 그대로 뒀어요 — 꼭 확인하세요):</span>
+                    <ul className="list-disc pl-5">{aiReport.conflicts.map((w, i) => <li key={i} className="text-danger">{w}</li>)}</ul>
                   </div>
                 )}
                 {aiReport.warnings.length > 0 && (

@@ -84,6 +84,46 @@ try {
     assert.equal(clean('influencer', [{ name: 'performanceRate', value: '130', evidence: '' }]).performanceRate, undefined)
     assert.equal(clean('influencer', [{ name: 'fixedFee', value: '0', evidence: '' }]).fixedFee, undefined)
   })
+  await t('고른 값과 서류 비교: 신규로 골랐는데 서류가 기존 캠페인의 확대 기안서이면 지적하고, 고른 값은 바꾸지 않는다 (같으면 지적 없음)', async () => {
+    const { findConflicts } = await import('@/lib/modules/intake/extract-compare')
+    const cat = { refLabel: '캠페인 ID', idPrefix: 'CMP-', options: [{ id: 'CMP-0003', label: 'CMP-0003 토모카 기초 캠페인3' }] }
+    const doc = { refId: 'CMP-0003', dealType: '확대' }
+    const a = findConflicts(cat, { refId: '__new__', isNew: true, deal: '신규' }, doc, '구분')
+    assert.equal(a.length, 2); assert.match(a[0], /신규 ID 입력.*이미 있는 캠페인 CMP-0003 토모카 기초 캠페인3의 안건/); assert.match(a[1], /구분: '신규'.*'확대'/)
+    const b = findConflicts(cat, { refId: 'CMP-0003', isNew: false, deal: '신규' }, doc, '구분')
+    assert.equal(b.length, 1); assert.match(b[0], /구분: '신규'/)
+    assert.deepEqual(findConflicts(cat, { refId: 'CMP-0003', isNew: false, deal: '확대' }, doc, '구분'), [], '같으면 지적하지 않는다')
+    assert.match(findConflicts(cat, { refId: 'CMP-0009', isNew: false, deal: '확대' }, doc, '구분')[0], /고른 CMP-0009와 서류의 CMP-0003/)
+    assert.deepEqual(findConflicts(cat, { refId: '', isNew: false, deal: '' }, doc, '구분'), [], '아직 아무것도 안 골랐으면 지적할 것이 없다')
+  })
+  await t('원본 마스터로 채우기: 서류가 캠페인 ID 만 적었으면 소속 인플루언서·제품 종류를 마스터에서 채우고, 서류에 적힌 값은 건드리지 않는다', async () => {
+    const { enrichFromMaster } = await import('@/lib/modules/intake/extract-compare')
+    const master = [{ id: 'CMP-0003', influencerId: 'INF-003', productLine: '기초' }]
+    const v = { refId: 'CMP-0003' }, ev = {}
+    enrichFromMaster('campaign', v, ev, master)
+    assert.equal(v.parentInfluencerId, 'INF-003'); assert.equal(v.productLine, '기초'); assert.match(ev.productLine, /m_campaign_ms\.csv.*CMP-0003/)
+    const w = { refId: 'CMP-0003', productLine: '색조' }; enrichFromMaster('campaign', w, {}, master)
+    assert.equal(w.productLine, '색조', '서류에 적힌 값이 우선'); assert.equal(w.parentInfluencerId, 'INF-003')
+    const u = { refId: 'CMP-9999' }; enrichFromMaster('campaign', u, {}, master); assert.deepEqual(u, { refId: 'CMP-9999' }, '마스터에 없는 ID 는 채우지 않는다')
+    const i = { refId: 'CMP-0003' }; enrichFromMaster('influencer', i, {}, master); assert.deepEqual(i, { refId: 'CMP-0003' }, '인플루언서 분류에는 쓰지 않는다')
+  })
+  await t('시연용 서류: data/demo 의 파일은 합성데이터 원본과 같고, ZIP 으로 묶어도 한글 파일 이름·내용이 그대로 풀린다', async () => {
+    const { buildZip, crc32 } = await import('@/lib/modules/intake/demo-files')
+    const { createHash } = await import('node:crypto')
+    const sha = (p) => createHash('sha256').update(fs.readFileSync(p)).digest('hex')
+    const pairs = [['normal', '합성데이터/채운문서/T26_확대_토모카_캠페인3'], ['exception', '합성데이터/예외문서/M04_값누락_추계서_신규_보미_캠페인4_T13']]
+    for (const [kind, src] of pairs) {
+      const names = fs.readdirSync(`data/demo/${kind}`).sort()
+      assert.ok(names.length >= 3, `${kind}: 서류가 3개 이상`)
+      for (const f of names) assert.equal(sha(`data/demo/${kind}/${f}`), sha(`${src}/${f}`), `${kind}/${f} 가 합성데이터 원본과 같다`)
+      const zipped = buildZip(names.map((f) => ({ filename: f, content: fs.readFileSync(`data/demo/${kind}/${f}`) })))
+      const back = readZip(zipped)
+      assert.deepEqual([...back.keys()].sort(), names)
+      for (const f of names) assert.ok(back.get(f).equals(fs.readFileSync(`data/demo/${kind}/${f}`)), `${f} 내용 그대로`)
+    }
+    assert.equal(crc32(Buffer.from('hello')), crc32(Buffer.from('hello'))); assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926, 'CRC32 표준 시험값')
+    assert.match(xlsxToText(fs.readFileSync('data/demo/exception/02_비용편익추계서_누락.xlsx')), /시트/)
+  })
   console.log(`\n${n}개 시험 모두 통과`)
   process.exit(0)
 } catch (e) {

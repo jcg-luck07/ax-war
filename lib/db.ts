@@ -16,6 +16,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { applyCoreSchema } from '@/lib/engine/schema'
 import { loadSourceFile } from '@/lib/ingest/core'
+import { loadDemoFiles } from '@/lib/modules/intake/demo-files'
 import { MASIL_FILES, SOURCE_DIR_DEFAULT } from '@/lib/ingest/manifest'
 
 const RUNTIME_URL = process.env.DATABASE_URL ?? ''
@@ -101,6 +102,7 @@ export function ensureSchema(): Promise<void> {
       // 범용 의사결정 엔진 공통 테이블 (안건·이력·승인·작업·가정·원본 행) — lib/engine/schema.ts
       await applyCoreSchema(migrate)
       await loadMissingSources(migrate)
+      await loadDemoFiles(migrate) // 시연용 첨부서류(정상·데이터 누락)를 DB 에 올려 둔다 — 안건 접수 화면에서 내려받는다
     } finally {
       await migrate.end()
     }

@@ -10,6 +10,7 @@ import { CLAUDE_MODEL, claudeConfigured } from '@/lib/modules/w02/ai-claude'
 import { DEAL_TYPES } from '@/lib/app/submission-title'
 import { AUTO_RENEW_OPTIONS, FEE_TYPES, categoryById, type UploadedFile } from './submissions'
 import { docxToText, xlsxToText } from './office-text'
+import { enrichFromMaster } from './extract-compare'
 
 /** 문서에서 뽑을 수 있는 칸 (제출 폼의 칸 이름과 같다) */
 export const EXTRACT_FIELDS = [
@@ -58,9 +59,19 @@ const SCHEMA = {
 
 const KIND_NAME: Record<string, string> = { draft: '기안서', estimate: '비용 및 성과 추계서', contract: '기존 계약서', consult: '협의서', custom: '추가 첨부' }
 
-const PROMPT = (category: string, productLines: string[]) => `
+/** 서류의 이름·ID 를 원본 마스터와 맞춰 보도록 모델에 보여 주는 목록 */
+export interface MasterLists {
+  influencers: { id: string; name: string }[]
+  campaigns: { id: string; name: string; influencerId: string; productLine: string }[]
+}
+
+const PROMPT = (category: string, productLines: string[], master: MasterLists) => `
 너는 Masil 마케팅 안건 제출을 돕는 문서 읽기 보조자다. 첨부된 서류(기안서·비용편익추계서·계약서·협의 자료)를 읽고, 제출 화면의 빈칸에 넣을 값을 뽑는다.
 이번 제출의 분류: ${category === 'influencer' ? '인플루언서 전속계약' : '캠페인 집행'}.
+
+[원본 마스터 — 서류의 이름·ID 를 이 목록과 맞춰 본다]
+- 인플루언서: ${master.influencers.map((i) => `${i.id} ${i.name}`).join(', ') || '(없음)'}
+- 캠페인: ${master.campaigns.map((c) => `${c.id} ${c.name}(소속 ${c.influencerId}, ${c.productLine})`).join(', ') || '(없음)'}
 
 [원칙]
 - 서류에 적혀 있는 값만 쓴다. 추측하거나 계산해서 지어내지 않는다. 서류에 없거나 "미확인"이면 value 를 null 로 둔다.
@@ -70,11 +81,13 @@ const PROMPT = (category: string, productLines: string[]) => `
 - evidence 에는 값을 어느 서류의 어느 항목에서 읽었는지 짧게 적는다 (예: "기안서 2항 요청금액").
 
 [칸]
-- refId: 분류 ID. 인플루언서 INF-nnn / 캠페인 CMP-nnnn
+- refId: 분류 ID. 인플루언서 INF-nnn / 캠페인 CMP-nnnn. 서류에 ID 가 적혀 있으면 그대로 쓰고, 이름만 있으면 원본 마스터에서 이름으로 찾아 그 ID 를 쓴다
 - refName: 새 인플루언서의 활동명 (서류에 새 인플루언서로 나올 때만)
-- parentInfluencerId: 캠페인의 소속 인플루언서 ID (INF-nnn), 소속이 없으면 NONE
-- productLine: 제품 종류 (${productLines.join(' / ')} 중 하나)
+- parentInfluencerId: 캠페인의 소속 인플루언서 ID (INF-nnn). 서류에 인플루언서 이름이 있으면 원본 마스터에서 찾아 ID 로 적는다. 소속이 없다고 분명히 적혀 있을 때만 NONE
+- productLine: 제품 종류 (${productLines.join(' / ')} 중 하나). 서류의 제품명·캠페인 이름(예: "기초 캠페인3")에서 읽는다
 - dealType: 구분. ${category === 'influencer' ? '신규 / 갱신 (전속계약 신규 체결이면 신규, 갱신이면 갱신)' : '신규 / 확대 (새 캠페인이면 신규, 기존 캠페인의 확대 집행이면 확대)'}
+  구분은 서류 전체를 보고 정한다: 기안서 제목·"구분" 체크 칸·본문의 "확대"·"기존 캠페인"·"갱신" 같은 표현, 기존 계약서가 함께 첨부됐는지, 대상 ID 가 원본 마스터에 이미 있는지. 근거가 있으면 반드시 값을 채우고 evidence 에 근거를 적는다(비워 두지 않는다).
+  서류끼리 구분이 다르면(예: 기안서는 확대인데 추계서는 신규) 그 사실을 warnings 에 적는다.
 - settlementDate: 지급 예정일 (돈이 나가는 날)
 - contractDeadline: 계약 체결 기한 (갱신이면 통보 기한)
 ${category === 'influencer' ? '- currentExpiry: 현 계약 만료일 (갱신일 때)\n- autoRenew: 현 계약의 자동 갱신 여부 — 자동 갱신 / 자동 갱신 아님 (갱신일 때. 계약서에 자동 갱신 조항이 있으면 자동 갱신)\n- feeType: 계약 방식 — 고정 피 / 성과 피 / 혼합 피\n- fixedFee: 고정 피 금액 (연, 원)\n- performanceFee: 연 예상 성과 피 금액 (원)\n- performanceRate: 성과 피 비율 (귀속 GMV 대비 %)' : '- requested: 요청금액 (집행 예산, 원) = 마케팅 지출 합계'}
@@ -156,6 +169,10 @@ export async function extractFromFiles(sql: Sql, category: string, files: Upload
   const [campaigns, influencers] = await Promise.all([entityRows(sql, MASIL_MODEL, 'campaign').catch(() => []), entityRows(sql, MASIL_MODEL, 'influencer').catch(() => [])])
   const productLines = [...new Set(campaigns.map((c) => String(c.product_line)))]
   const influencerIds = influencers.map((i) => String(i.influencer_id))
+  const master: MasterLists = {
+    influencers: influencers.map((i) => ({ id: String(i.influencer_id), name: String(i.influencer_name) })),
+    campaigns: campaigns.map((c) => ({ id: String(c.campaign_id), name: String(c.campaign_name), influencerId: String(c.influencer_id), productLine: String(c.product_line) })),
+  }
   content.push({ type: 'text', text: '위 서류를 읽고 제출 칸의 값을 JSON 으로 돌려주세요.' })
 
   const client = new Anthropic()
@@ -163,7 +180,7 @@ export async function extractFromFiles(sql: Sql, category: string, files: Upload
     const res = await client.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 8000,
-      system: PROMPT(category, productLines),
+      system: PROMPT(category, productLines, master),
       output_config: { effort: 'medium', format: { type: 'json_schema', schema: SCHEMA as unknown as Record<string, unknown> } },
       messages: [{ role: 'user', content }],
     })
@@ -173,6 +190,8 @@ export async function extractFromFiles(sql: Sql, category: string, files: Upload
     let parsed: { fields?: { name: string; value: string | null; evidence: string }[]; warnings?: string[] }
     try { parsed = JSON.parse(text) } catch { throw new Error('Claude 의 답을 읽지 못했어요. 다시 시도해 주세요.') }
     const { values, evidence } = sanitize(category, parsed.fields ?? [], productLines, influencerIds)
+    // 서류가 캠페인 ID 만 적고 소속 인플루언서·제품 종류를 안 적었으면 원본 마스터에서 채운다
+    enrichFromMaster(category, values, evidence, master.campaigns.map((c) => ({ id: c.id, influencerId: c.influencerId, productLine: c.productLine })))
     return { values, evidence, warnings: (parsed.warnings ?? []).map((w) => String(w).slice(0, 200)).slice(0, 8), skipped, model: res.model, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens }
   } catch (e) {
     if (e instanceof Anthropic.AuthenticationError) throw new Error('API 키가 올바르지 않아요. .env.local 의 ANTHROPIC_API_KEY 를 확인해 주세요.')
