@@ -89,6 +89,9 @@ export function ensureSchema(): Promise<void> {
     // 마이그레이션은 직결 세션(DIRECT_URL)으로 — advisory lock 등 세션 기능이 필요할 수 있어요.
     const migrate = postgres(DIRECT_URL, { max: 1, onnotice: () => {} }) // IF NOT EXISTS 안내 메시지는 무시
     try {
+      // 서버 시작 작업(instrumentation)과 첫 요청, 또는 여러 파드가 동시에 처음 켜질 때 CREATE TABLE IF NOT EXISTS 가
+      // 서로 부딪혀(pg_type 중복 키 오류) 실패하지 않도록 DB 잠금으로 한 번에 하나씩만 실행한다.
+      await migrate`SELECT pg_advisory_lock(7420030)`
       await migrate`
         CREATE TABLE IF NOT EXISTS todos (
           id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -104,6 +107,7 @@ export function ensureSchema(): Promise<void> {
       await loadMissingSources(migrate)
       await loadDemoFiles(migrate) // 시연용 첨부서류(정상·데이터 누락)를 DB 에 올려 둔다 — 안건 접수 화면에서 내려받는다
     } finally {
+      await migrate`SELECT pg_advisory_unlock(7420030)`.catch(() => {}) // 연결이 끝나면 어차피 풀리지만 명시적으로 푼다
       await migrate.end()
     }
   })().catch((e) => {

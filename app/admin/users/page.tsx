@@ -42,7 +42,7 @@ export default async function UsersPage() {
                 <Card.Title>역할이 하는 일</Card.Title>
               </Card.Header>
               <Card.Content className="flex flex-col gap-1">
-                <span className="t-small">• 마케팅 팀장·Masil 대표·CEO/이사회: 승인할 수 있어요. 더 높은 권한은 낮은 권한의 승인을 대신할 수 있어요 (그룹 CEO와 CEO/이사회는 같은 수준).</span>
+                <span className="t-small">• 마케팅 팀장·Masil 대표·CEO/이사회: 승인할 수 있어요. 승인은 그 승인을 맡은 역할 본인만 해요 (높은 권한도 다른 승인권자의 승인을 대신하지 않아요. 그룹 CEO와 CEO/이사회는 같은 수준).</span>
                 <span className="t-small">• 재무·계약 담당: 승인 권한은 없고, 자기 부서로 온 확인 요청과 작업을 처리해요.</span>
                 <span className="t-small">• 역할이 없는 사람은 화면을 볼 수만 있어요.</span>
               </Card.Content>
