@@ -18,5 +18,7 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
+# 원본 CSV 복사본 — 배포 DB 가 비어 있으면 첫 기동 때 여기서 채워요 (lib/db.ts loadMissingSources)
+COPY --from=build /app/data ./data
 EXPOSE 3000
 CMD ["node", "server.js"]

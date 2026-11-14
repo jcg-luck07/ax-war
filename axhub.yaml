@@ -13,7 +13,14 @@ build:
   dockerfile: Dockerfile
   deploy_method: docker
 env:
+  # AI 판단·기안서 읽기(Claude)에 필요해요. 값은 axhub env set 으로 따로 등록해요 (여기엔 이름만).
+  required:
+    - { name: ANTHROPIC_API_KEY, scope: runtime }
   optional:
+    - name: ANTHROPIC_MODEL
+      scope: runtime
+    - name: ANTHROPIC_BASE_URL
+      scope: runtime
     - name: APPHUB_API_URL
       scope: runtime
     - name: APPHUB_APP_SLUG

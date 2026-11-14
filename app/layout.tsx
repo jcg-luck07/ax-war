@@ -3,8 +3,8 @@ import { Providers } from "@/components/Providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "axhub × Next.js",
-  description: "조코딩 AX 파트너스 axhub 위에서 굴러가는 Next.js 바이브코딩 템플릿",
+  title: "안건 결재 · 계약·캠페인 의사결정",
+  description: "인플루언서 계약·캠페인 확대 안건을 접수하고, 규칙과 데이터로 판단해 승인·후속 작업까지 처리해요.",
 };
 
 // 다크 모드 — 그리기 전에 시스템 설정을 보고 <html data-theme="dark"> 를 붙여요 (깜박임 방지).

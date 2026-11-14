@@ -12,7 +12,11 @@
 //
 // 클라이언트 컴포넌트에서 import 금지 — 서버(Server Component / Route Handler / Server Action)에서만.
 import postgres from 'postgres'
+import { existsSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { applyCoreSchema } from '@/lib/engine/schema'
+import { loadSourceFile } from '@/lib/ingest/core'
+import { MASIL_FILES, SOURCE_DIR_DEFAULT } from '@/lib/ingest/manifest'
 
 const RUNTIME_URL = process.env.DATABASE_URL ?? ''
 const DIRECT_URL = process.env.DIRECT_DATABASE_URL || RUNTIME_URL
@@ -56,6 +60,29 @@ export function db(): ReturnType<typeof postgres> {
 // 이 promise 는 일부러 globalThis 에 캐시하지 않아요 — dev 핫리로드 때 재실행돼야
 // 여기 추가한 테이블이 서버 재시작 없이 반영돼요 (커넥션은 finally 로 닫혀 누수 없음).
 let _schema: Promise<void> | null = null
+
+// 배포 DB 는 비어 있어서, DB 에 아직 없는 원본 CSV 만 저장소의 data/source(원본 복사본)에서 채워요.
+// 이미 있는 파일은 건드리지 않아요(로컬·시험 DB 는 그대로). 여러 파드가 동시에 켜져도 advisory lock 으로 한 곳만 적재해요.
+async function loadMissingSources(sql: ReturnType<typeof postgres>): Promise<void> {
+  const have = new Set((await sql<{ source_file: string }[]>`SELECT source_file FROM source_files`).map((r) => r.source_file))
+  if (MASIL_FILES.every((f) => have.has(f))) return
+  const baseDir = [process.env.SOURCE_DATA_DIR, 'data/source', SOURCE_DIR_DEFAULT]
+    .filter((d): d is string => Boolean(d))
+    .map((d) => resolve(process.cwd(), d))
+    .find((d) => existsSync(d))
+  if (!baseDir) {
+    console.error('[원본 적재] 원본 CSV 폴더(data/source)를 찾지 못했어요. 현금흐름·성과 화면이 비어 보일 수 있어요.')
+    return
+  }
+  await sql`SELECT pg_advisory_lock(7420031)`
+  try {
+    const now = new Set((await sql<{ source_file: string }[]>`SELECT source_file FROM source_files`).map((r) => r.source_file))
+    for (const f of MASIL_FILES) if (!now.has(f)) await loadSourceFile(sql, baseDir, f)
+  } finally {
+    await sql`SELECT pg_advisory_unlock(7420031)`
+  }
+}
+
 export function ensureSchema(): Promise<void> {
   _schema ??= (async () => {
     // 마이그레이션은 직결 세션(DIRECT_URL)으로 — advisory lock 등 세션 기능이 필요할 수 있어요.
@@ -73,9 +100,13 @@ export function ensureSchema(): Promise<void> {
       await migrate`CREATE INDEX IF NOT EXISTS todos_user_key_idx ON todos (user_key)`
       // 범용 의사결정 엔진 공통 테이블 (안건·이력·승인·작업·가정·원본 행) — lib/engine/schema.ts
       await applyCoreSchema(migrate)
+      await loadMissingSources(migrate)
     } finally {
       await migrate.end()
     }
-  })()
+  })().catch((e) => {
+    _schema = null // 실패한 결과를 붙들고 있지 않고 다음 요청에서 다시 시도해요
+    throw e
+  })
   return _schema
 }
