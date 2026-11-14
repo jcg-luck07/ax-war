@@ -313,6 +313,8 @@ export async function CaseDetail({ caseId, profitOnly }: { caseId: number; /** �
     profitability: profData,
     perf,
     subject: { influencerId: String(c.subjectRefs.influencer ?? ''), campaignId: c.subjectRefs.campaign ? String(c.subjectRefs.campaign) : undefined },
+    // AI 판단의 비교 범위도 수익성 검증 표와 같게 — 이 안건이 속한 기안서 안으로만 (표가 전체로 되돌렸으면 AI 도 전체)
+    draftScope: profData.scope === 'draft' && peers ? peers : null,
     allocation: shares,
     amount: revisions.length > 0 ? { currentKrw: currentAmount, originalKrw: originalAmount, revisions: revisions.map((r) => ({ no: r.no, fromKrw: r.fromAmount, toKrw: r.toAmount, pct: r.pct, reason: r.reason })) } : null,
     fees: {
@@ -486,7 +488,14 @@ export async function CaseDetail({ caseId, profitOnly }: { caseId: number; /** �
                     ),
                 },
                 ...(notes.length > 0
-                  ? [{ key: 'notes', title: '일정·기한', body: <>{notes.map((n) => <p key={n} className="t-small">{n}</p>)}</> }]
+                  ? [{
+                      key: 'notes',
+                      title: '일정·기한',
+                      // 돈이 나가는 날이 현금 하회 예상 구간 안이면 그 줄을 빨간 글씨로 (w02Notes 의 첫 줄)
+                      body: <>{notes.map((n) => (
+                        <p key={n} className="t-small">{n.includes('현금 하회 예상 구간 안') ? <strong className="text-danger">{n}</strong> : n}</p>
+                      ))}</>,
+                    }]
                   : []),
                 ...(
                   [

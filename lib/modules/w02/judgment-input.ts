@@ -3,7 +3,8 @@
 //
 // 담는 것:
 //  · 이 안건의 대상과 값의 출처, 수익성 검증 표 전체(대상 값·비교 묶음·표의 지표별 순위)
-//  · 회사 전체의 캠페인·인플루언서 성과 목록과 분포(표 밖의 비교 기준) — 이 안건의 대상은 isSubject 로 표시
+//  · 이 안건이 속한 기안서 안의 캠페인·인플루언서 성과 목록과 분포(비교 기준) — 이 안건의 대상은 isSubject 로 표시.
+//    같은 기안서에 비교할 다른 안건이 없을 때만 전체 목록을 쓴다(company.scope 로 구분)
 //  · 배분: 인플루언서별 이번 기안 요청 비중 · 지난 1년 집행 비중 · 실질 공헌이익 순위
 //  · 계약 방식·금액(알려진 것만)과 지표의 한계
 import type { PerfLine, PerformanceResult } from '@/lib/metrics/performance'
@@ -65,8 +66,8 @@ export interface JudgmentInput {
   }
   /** 수익성 검증 표 전체 (대상 값, 비교 묶음, 표의 지표별 순위, 누락 자료) */
   profitability: ProfitabilityData
-  /** 회사 전체 비교 기준 — 표 밖의 안건·인플루언서·캠페인 순위와 분포 */
-  company: { campaigns: CompanyView; influencers: CompanyView }
+  /** 비교 기준 — 이 안건이 속한 기안서 안의 캠페인·인플루언서 순위와 분포(scope='draft'). 같은 기안서에 비교할 다른 안건이 없으면 전체 목록으로 대신한다(scope='all'). 순위는 이 범위 안의 순위다. */
+  company: { scope: 'draft' | 'all'; campaigns: CompanyView; influencers: CompanyView }
   /** 배분 방향: 요청 비중 vs 지난 1년 집행 비중 vs 실질 공헌이익 순위 (캠페인 집행 안건) */
   allocation: ShareCompare | null
   /** 계약 방식·금액 — 모르는 것은 null */
@@ -118,6 +119,8 @@ export interface BuildInputArgs {
   profitability: ProfitabilityData
   perf: PerformanceResult | null
   subject: { influencerId: string; campaignId?: string }
+  /** 이 안건이 속한 기안서의 캠페인·인플루언서 (이 안건의 것 포함). 주면 비교 기준을 그 안으로 좁힌다. 없으면 전체 목록 */
+  draftScope?: { campaignIds: string[]; influencerIds: string[] } | null
   allocation: ShareCompare | null
   /** 수정 보고 이력 (없거나 비어 있으면 입력에 넣지 않는다) */
   amount?: AmountHistory | null
@@ -126,16 +129,21 @@ export interface BuildInputArgs {
 
 export function buildJudgmentInput(a: BuildInputArgs): JudgmentInput {
   const p = a.perf
-  const camps = p?.byCampaign ?? []
+  // 같은 기안서 안으로 좁힌다 (이 안건의 대상은 항상 포함). 순위는 좁힌 범위 안에서 다시 매긴다 — 원본 기안서·회사 전체와 섞지 않는다.
+  const scope = a.draftScope ?? null
+  const campIds = scope ? new Set([...scope.campaignIds, ...(a.subject.campaignId ? [a.subject.campaignId] : [])]) : null
+  const infIds = scope ? new Set([...scope.influencerIds, a.subject.influencerId].filter(Boolean)) : null
+  const camps = (p?.byCampaign ?? []).filter((c) => !campIds || campIds.has(c.campaignId))
   const cr = ranks(camps.map((c) => c.contributionProfit)), gr = ranks(camps.map((c) => c.gmv))
   const campaigns = view(camps.map((c, i) => rowOf(c, c.campaignId, c.campaignName, c.influencerId, c.campaignId === a.subject.campaignId, cr[i], gr[i])))
-  const infs = p?.byInfluencer ?? []
-  const influencers = view(infs.map((i) => rowOf(i, i.influencerId, i.influencerName, i.influencerId, i.influencerId === a.subject.influencerId && !a.subject.campaignId, i.rankByContribution, i.rankByGmv)))
+  const infs = (p?.byInfluencer ?? []).filter((i) => !infIds || infIds.has(i.influencerId))
+  const ir = ranks(infs.map((i) => i.contributionProfit)), ig = ranks(infs.map((i) => i.gmv))
+  const influencers = view(infs.map((i, k) => rowOf(i, i.influencerId, i.influencerName, i.influencerId, i.influencerId === a.subject.influencerId && !a.subject.campaignId, ir[k], ig[k])))
   const rateKnown = Number(a.fees.performanceRate ?? 0) > 0
   return {
     caseInfo: { kind: a.profitability.kind, subjectName: a.profitability.subjectName, basis: a.profitability.basis, ...(a.amount && a.amount.revisions.length > 0 ? { amount: a.amount } : {}) },
     profitability: a.profitability,
-    company: { campaigns, influencers },
+    company: { scope: scope ? 'draft' : 'all', campaigns, influencers },
     allocation: a.allocation,
     fees: {
       feeType: a.fees.feeType ?? a.profitability.subjectFeeType,

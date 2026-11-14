@@ -98,6 +98,24 @@ try {
     assert.ok(Array.isArray(JSON.parse(JSON.stringify(input)).company.influencers.rows)) // JSON 으로 그대로 보낼 수 있다
     assert.equal(distributionOf([1, 2, 3, 4, 5]).median, 3); assert.equal(distributionOf([]), null)
     assert.match(JUDGMENT_PROMPT, /절대 수익성/)
+    assert.equal(input.company.scope, 'all', '기안서 범위를 주지 않으면 전체 목록이다')
+  })
+
+  await t('AI 비교 범위: 이 안건이 속한 기안서의 캠페인·인플루언서로만 좁히고, 순위는 그 범위 안에서 다시 매긴다 (원본·다른 기안서와 섞지 않는다)', () => {
+    const d = buildProfitability({ ...base, kind: 'campaign', influencerId: 'INF-001', campaignId: 'CMP-1', peers: { campaignIds: ['CMP-3', 'CMP-5'], influencerIds: ['INF-002', 'INF-004'] } })
+    const mk = (draftScope) => buildJudgmentInput({ profitability: d, perf, subject: { influencerId: 'INF-001', campaignId: 'CMP-1' }, draftScope, allocation: null, fees: {} })
+    const scoped = mk({ campaignIds: ['CMP-3', 'CMP-5'], influencerIds: ['INF-002', 'INF-004'] })
+    assert.equal(scoped.company.scope, 'draft')
+    assert.deepEqual(scoped.company.campaigns.rows.map((r) => r.id).sort(), ['CMP-1', 'CMP-3', 'CMP-5'], '같은 기안서의 캠페인 + 이 안건의 캠페인만')
+    assert.equal(scoped.company.campaigns.rows.filter((r) => r.isSubject).length, 1)
+    assert.equal(scoped.company.campaigns.rows.find((r) => r.isSubject).rankByContribution, 3, '3개 중 3위 (전체 5개 중 순위가 아니다)')
+    assert.deepEqual(scoped.company.influencers.rows.map((r) => r.influencerId).sort(), ['INF-001', 'INF-002', 'INF-004'], '기안서 밖의 인플루언서(INF-003)는 없다')
+    assert.equal(scoped.company.influencers.rows.find((r) => r.influencerId === 'INF-001').rankByContribution, 3, '인플루언서 순위도 범위 안에서 다시 매긴다')
+    assert.equal(scoped.company.campaigns.dist.contributionProfit.n, 3); assert.equal(scoped.company.campaigns.dist.contributionProfit.negative, 1)
+    // 범위가 다르면 입력(해시)이 달라진다 → 저장된 판단은 새 기준으로 다시 묻는다
+    assert.notDeepEqual(scoped.company, mk(null).company)
+    assert.equal(mk(null).company.campaigns.rows.length, 5)
+    assert.match(JUDGMENT_PROMPT, /company\.scope/); assert.match(JUDGMENT_PROMPT, /속한 기안서/)
   })
 
   await t('수정 보고: 바뀐 금액으로 다시 만든 수익성 값과 수정 이력이 AI 입력에 들어가 입력(해시)이 달라진다 — 수정 보고가 없으면 입력에 금액 칸이 없다', async () => {
