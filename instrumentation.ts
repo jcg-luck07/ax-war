@@ -3,5 +3,13 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME !== 'nodejs') return
   const { isDbConfigured, ensureSchema } = await import('@/lib/db')
-  if (isDbConfigured()) void ensureSchema().catch((e) => console.error('[시작 시 DB 준비 실패]', e))
+  if (!isDbConfigured()) return
+  void (async () => {
+    await ensureSchema()
+    // 운영(배포)에서만: 안건이 하나도 없으면 원본 자료 기반 안건을 한 번 넣는다. 로컬·시험 DB 는 건드리지 않는다.
+    if (process.env.NODE_ENV === 'production') {
+      const { seedOriginalIfEmpty } = await import('@/lib/app/seed-original')
+      await seedOriginalIfEmpty()
+    }
+  })().catch((e) => console.error('[시작 시 DB 준비 실패]', e))
 }
