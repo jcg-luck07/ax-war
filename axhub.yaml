@@ -19,8 +19,6 @@ env:
   optional:
     - name: ANTHROPIC_MODEL
       scope: runtime
-    - name: ANTHROPIC_BASE_URL
-      scope: runtime
     - name: APPHUB_API_URL
       scope: runtime
     - name: APPHUB_APP_SLUG

@@ -2,7 +2,7 @@
 //  · 입력: judgment-input.ts 의 JudgmentInput 을 JSON 으로 그대로 보낸다.
 //  · 지시: ai-prompt.ts 의 JUDGMENT_PROMPT (+ 출력 형식 안내)
 //  · 출력: JSON 스키마(structured outputs)로 줄 목록을 받아 화면의 JudgmentLine 으로 바꾼다.
-// 키는 환경변수 ANTHROPIC_API_KEY (.env.local) 에서 읽는다. 회사 AXRouter 를 쓰면 ANTHROPIC_BASE_URL 도 함께 넣는다.
+// 키는 환경변수 ANTHROPIC_API_KEY 에서 읽는다 (로컬은 .env.local, 배포는 axhub env 에 본인 키를 비밀값으로 등록). AXRouter 는 대회에서 쓰지 않는다.
 import Anthropic from '@anthropic-ai/sdk'
 import { JUDGMENT_PROMPT } from './ai-prompt'
 import type { Judgment, JudgmentLine } from './ai-judgment'
