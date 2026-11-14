@@ -6,7 +6,7 @@ export async function register() {
   if (!isDbConfigured()) return
   void (async () => {
     await ensureSchema()
-    // 운영(배포)에서만: 안건이 하나도 없으면 원본 자료 기반 안건을 한 번 넣는다. 로컬·시험 DB 는 건드리지 않는다.
+    // 운영(배포)에서만: 안건·접수가 하나도 없으면 원본 자료 기반 안건을 한 번 넣는다(시연 뒤 DB 를 비우고 다시 켜면 원래 상태로 돌아온다). 로컬·시험 DB 는 건드리지 않는다.
     if (process.env.NODE_ENV === 'production') {
       const { seedOriginalIfEmpty } = await import('@/lib/app/seed-original')
       await seedOriginalIfEmpty()
