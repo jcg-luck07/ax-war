@@ -8,7 +8,7 @@ import { JUDGMENT_PROMPT } from './ai-prompt'
 import type { Judgment, JudgmentLine } from './ai-judgment'
 import type { JudgmentInput } from './judgment-input'
 
-export const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-5-5'
+export const CLAUDE_MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5'
 
 const OUTPUT_GUIDE = `
 [출력 방식]
