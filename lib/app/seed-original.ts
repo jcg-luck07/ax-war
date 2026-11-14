@@ -1,7 +1,7 @@
 // 배포 DB 가 처음 켜질 때, 안건이 하나도 없으면 원본 자료에서 나온 안건만 넣는다 (서버 전용).
 //   1) 마케팅 확대 기안 25건 — 02_masil/marketing/mkt_budget_plan_ms.csv
 //   2) 혜인(INF-001) 전속계약 갱신 통보 1건 — inf001_exclusive_contract_notice.md (고정 피 지급일은 원본에 없어 비워 두고 재무 확인 요청이 된다)
-// 합성 안건은 넣지 않는다. 안건이 이미 있으면 아무것도 하지 않는다(심사자가 만든 안건을 건드리지 않음).
+// 합성 안건은 넣지 않는다. (원본 확대 기안 25건 전부, 토모카 기초 캠페인3 PLAN-004 포함) 안건이 이미 있으면 아무것도 하지 않는다(심사자가 만든 안건을 건드리지 않음).
 // scripts/seed-original.mjs 와 같은 내용이지만, 그 스크립트와 달리 지우지 않고 "비어 있을 때만" 넣는다.
 import postgres from 'postgres'
 import { getEngine } from '@/lib/app/engine'
