@@ -96,22 +96,13 @@ export const EXPANSION_FLOW: FlowDef = {
 /**
  * 그룹 300억 배분 대상 안건의 흐름: CEO/이사회가 결정한다.
  *  · 승인 → 최종 승인 (후속 작업으로)
- *  · 부결 → 300억 배분 대상에서 빠지고, 일반 승인 규칙의 승인권자(예: Masil 대표)가 다시 결정한다 (재결정에서 승인·부결·재검토)
+ *  · 부결 → 집행 중단 처리 (재결정 단계는 없다)
  *  · 재검토 → 원래 올린 부서로
  */
 export function flowWithGroup300(def: FlowDef): FlowDef {
-  const decide = def.nodes.find((n) => n.id === 'decide')
-  if (!decide || def.nodes.some((n) => n.id === 'redecide')) return def
+  if (!def.nodes.some((n) => n.id === 'decide')) return def
   const nodes = def.nodes.map((n) => (n.id === 'decide' ? { ...n, label: 'CEO/이사회 결정', hint: '그룹 300억 배분' } : n))
-  nodes.push({ id: 'redecide', kind: 'gateway', label: '재결정', lane: 'approver', col: decide.col + 1, bind: { t: 'decision2' }, hint: '300억 제외 · 일반 승인 규칙' })
-  const rejectedTargets = def.edges.filter((e) => e.from === 'decide' && e.when === 'rejected').map((e) => e.to)
-  const edges = def.edges
-    .filter((e) => !(e.from === 'decide' && e.when === 'rejected'))
-    .concat({ from: 'decide', to: 'redecide', label: '부결', when: 'rejected' })
-    .concat({ from: 'redecide', to: 'doc', label: '승인', when: 'approved' })
-    .concat(rejectedTargets.map((to) => ({ from: 'redecide', to, label: '부결', when: 'rejected' as const })))
-    .concat({ from: 'redecide', to: 'holdReason', label: '재검토', when: 'on_hold' })
-  return { ...def, nodes, edges }
+  return { ...def, nodes }
 }
 
 /** 이 안건에 그룹 300억 흐름을 쓰는가: 재무팀이 300억 대상으로 정했거나(진행 중), CEO 부결로 대상에서 빠진 뒤 재결정 중·완료. 예전에 CEO 가 부결해 이미 끝난 안건은 원래 흐름 그대로. */

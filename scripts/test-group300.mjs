@@ -1,6 +1,6 @@
 // 그룹 300억 배분 대상 안건 시험.  node --import ./scripts/_register.mjs scripts/test-group300.mjs
 //  · 재무팀이 300억 대상으로 정하면 CEO/이사회가 결정한다. 승인 = 최종 승인.
-//  · CEO/이사회가 부결하면 300억 배분 대상에서 빠지고(대상 아님), 일반 승인 규칙의 승인권자(Masil 대표)가 재결정한다.
+//  · CEO/이사회가 부결하면 그대로 부결(집행 중단 처리). 재결정 단계는 없다.
 // ⚠️ 로컬 시험 DB(_test)의 안건·이력을 모두 지운다.
 import assert from 'node:assert/strict'
 import * as E from '@/lib/engine/engine'
@@ -37,12 +37,12 @@ const flowOf = async (id) => {
 try {
   await E.resetEngineData(sql)
 
-  await t('300억 대상으로 정하면 CEO/이사회가 승인권자이고, 업무 흐름표에도 CEO/이사회 결정 → 재결정 단계가 있다', async () => {
+  await t('300억 대상으로 정하면 CEO/이사회가 승인권자이고, 업무 흐름표에는 CEO/이사회 결정 단계가 있고 재결정 단계는 없다', async () => {
     const id = await readyCase('CMP-0004', true)
     const { v, def, st } = await flowOf(id)
     assert.equal(v.case.authority, 'ceo_board'); assert.equal(v.approvals.find((a) => a.status === 'pending').requiredRole, 'ceo_board')
-    assert.ok(def.nodes.some((x) => x.id === 'redecide'))
-    assert.equal(st.nodes.decide, 'current'); assert.equal(st.nodes.redecide, 'todo')
+    assert.ok(!def.nodes.some((x) => x.id === 'redecide'))
+    assert.equal(st.nodes.decide, 'current')
     assert.equal(stateText(def, st, v.case.status, 'CEO/이사회').text, '승인 필요 · CEO/이사회')
   })
   await t('앞 단계(계약 담당 확인) 중에는 상태에 "이후 CEO/이사회 결정 (300억)"이 함께 보이고, 지금 단계는 계약 담당 확인이다', async () => {
@@ -60,37 +60,16 @@ try {
     const ap = (await E.getCaseView(sql, id)).approvals.find((a) => a.status === 'pending')
     await E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'ceo_board', byName: 'CEO' })
     const { v, st } = await flowOf(id)
-    assert.equal(v.case.status, 'approved'); assert.equal(st.outcome, 'approved'); assert.equal(st.nodes.redecide, 'todo')
+    assert.equal(v.case.status, 'approved'); assert.equal(st.outcome, 'approved')
   })
-  await t('CEO/이사회가 부결하면 안건이 끝나지 않고 300억 대상에서 빠져 Masil 대표가 재결정한다 (업무 흐름표·상태도 재결정 단계)', async () => {
+  await t('CEO/이사회가 부결하면 그대로 부결이고 집행 중단 처리로 이어진다 (재결정 단계 없음)', async () => {
     const id = await readyCase('CMP-0006', true)
     const ap = (await E.getCaseView(sql, id)).approvals.find((a) => a.status === 'pending')
-    const r = await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'ceo_board', byName: 'CEO', comment: '300억에 넣지 않음' })
-    assert.notEqual(r.statusAfter, 'rejected')
-    const { v, def, st } = await flowOf(id)
-    assert.equal(v.case.status, 'pending_approval'); assert.equal(v.case.payload.facts.linked_to_group_300, false)
-    assert.ok(v.case.payload.group300Excluded); assert.equal(v.case.authority, 'masil_ceo')
-    assert.equal(v.approvals.find((a) => a.status === 'pending').requiredRole, 'masil_ceo')
-    assert.equal(v.approvals.find((a) => a.id === ap.id).status, 'superseded', 'CEO 의 부결 요청은 부결 기록으로 남기지 않는다(안건이 부결된 것이 아니므로)')
-    assert.equal(st.nodes.decide, 'done'); assert.equal(st.nodes.redecide, 'current'); assert.equal(st.edges['decide->redecide'], 'taken')
-    assert.equal(st.outcome, null)
-    assert.equal(stateText(def, st, v.case.status, 'Masil 대표').text, '승인 필요 · Masil 대표 (300억 제외 후 재결정)')
-    assert.ok(v.events.some((e) => e.eventType === 'decided' && e.detail.reroute === 'group300_excluded'))
-    // 재결정: Masil 대표가 승인하면 최종 승인, CEO 는 더 이상 결정할 수 없다
-    await assert.rejects(() => E.decide(sql, cfg, ap.id, { outcome: 'approved', byRole: 'ceo_board', byName: 'CEO' }), /이미 처리/)
-    const ap2 = v.approvals.find((a) => a.status === 'pending')
-    await E.decide(sql, cfg, ap2.id, { outcome: 'approved', byRole: 'masil_ceo', byName: '대표' })
-    const f = await flowOf(id)
-    assert.equal(f.v.case.status, 'approved'); assert.equal(f.st.nodes.redecide, 'done'); assert.equal(f.st.edges['redecide->doc'], 'taken'); assert.equal(f.st.edges['decide->doc'], 'dim')
-  })
-  await t('재결정에서 Masil 대표가 부결하면 그때는 안건이 부결된다', async () => {
-    const id = await readyCase('CMP-0008', true)
-    const ap = (await E.getCaseView(sql, id)).approvals.find((a) => a.status === 'pending')
-    await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'ceo_board', byName: 'CEO' })
-    const ap2 = (await E.getCaseView(sql, id)).approvals.find((a) => a.status === 'pending')
-    await E.decide(sql, cfg, ap2.id, { outcome: 'rejected', byRole: 'masil_ceo', byName: '대표' })
+    const r = await E.decide(sql, cfg, ap.id, { outcome: 'rejected', byRole: 'ceo_board', byName: 'CEO', comment: '부결' })
+    assert.equal(r.statusAfter, 'rejected')
     const { v, st } = await flowOf(id)
-    assert.equal(v.case.status, 'rejected'); assert.equal(st.outcome, 'rejected'); assert.equal(st.edges['redecide->rethinkAlloc'], 'taken')
+    assert.equal(v.case.status, 'rejected'); assert.equal(st.outcome, 'rejected'); assert.equal(st.edges['decide->rethinkAlloc'], 'taken')
+    assert.equal(v.approvals.find((a) => a.id === ap.id).status, 'rejected')
   })
   await t('300억 대상이 아닌 안건과 다른 승인권자의 부결은 그대로 부결이다', async () => {
     const id = await readyCase('CMP-0009', false)

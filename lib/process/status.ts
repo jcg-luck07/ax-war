@@ -36,7 +36,7 @@ export function stateText(def: FlowDef | undefined, st: FlowState | null, caseSt
     const b = cur.bind
     if (b.t === 'prep') {
       // 그룹 300억 대상 안건은 앞 단계가 끝나면 CEO/이사회가 결정한다 — 승인권자가 정해져 있다는 것을 상태에 함께 보여 준다
-      const next = def.nodes.some((n) => n.id === 'redecide') && st.nodes.decide === 'blocked' ? `이후 ${approverLabel} 결정 (300억)` : ''
+      const next = def.nodes.some((n) => n.id === 'decide' && n.hint === '그룹 300억 배분') && st.nodes.decide === 'blocked' ? `이후 ${approverLabel} 결정 (300억)` : ''
       return mk(b.key === 'confirm-terms' ? '계약 담당 확인 필요' : '재무팀 검토 필요', next, more)
     }
     if (b.t === 'decision') return mk('승인 필요', approverLabel, more)
