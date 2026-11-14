@@ -6,7 +6,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import type { Sql } from 'postgres'
 import { MASIL_MODEL } from '@/lib/semantic/model'
 import { entityRows } from '@/lib/semantic/run'
-import { CLAUDE_MODEL, claudeConfigured } from '@/lib/modules/w02/ai-claude'
+import { CLAUDE_MODEL, aiKeyMessage, claudeConfigured } from '@/lib/modules/w02/ai-claude'
 import { DEAL_TYPES } from '@/lib/app/submission-title'
 import { AUTO_RENEW_OPTIONS, FEE_TYPES, categoryById, type UploadedFile } from './submissions'
 import { docxToText, xlsxToText } from './office-text'
@@ -155,7 +155,7 @@ export function sanitize(category: string, raw: { name: string; value: string | 
 export async function extractFromFiles(sql: Sql, category: string, files: UploadedFile[]): Promise<ExtractResult> {
   if (!categoryById(category)) throw new Error('안건 종류를 골라 주세요')
   if (files.length === 0) throw new Error('먼저 첨부서류를 올려 주세요')
-  if (!claudeConfigured()) throw new Error('ANTHROPIC_API_KEY 가 설정되지 않았어요. .env.local 에 키를 넣고 개발 서버를 다시 시작해 주세요.')
+  if (!claudeConfigured()) throw new Error(aiKeyMessage('missing'))
 
   const content: Block[] = []
   const skipped: string[] = []
@@ -194,7 +194,7 @@ export async function extractFromFiles(sql: Sql, category: string, files: Upload
     enrichFromMaster(category, values, evidence, master.campaigns.map((c) => ({ id: c.id, influencerId: c.influencerId, productLine: c.productLine })))
     return { values, evidence, warnings: (parsed.warnings ?? []).map((w) => String(w).slice(0, 200)).slice(0, 8), skipped, model: res.model, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens }
   } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) throw new Error('API 키가 올바르지 않아요. .env.local 의 ANTHROPIC_API_KEY 를 확인해 주세요.')
+    if (e instanceof Anthropic.AuthenticationError) throw new Error(aiKeyMessage('invalid'))
     if (e instanceof Anthropic.RateLimitError) throw new Error('요청이 너무 많아요. 잠시 뒤에 다시 시도해 주세요.')
     if (e instanceof Anthropic.APIError) throw new Error(`Claude API 오류 (${e.status}): ${e.message}`)
     throw e

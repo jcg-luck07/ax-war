@@ -51,6 +51,14 @@ export function claudeConfigured(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN)
 }
 
+/** 키가 없거나 틀렸을 때 사용자에게 보여 줄 안내 — 배포본과 로컬은 고치는 곳이 달라서 문구를 나눈다 */
+export const aiKeyMessage = (kind: 'missing' | 'invalid'): string =>
+  process.env.NODE_ENV === 'production'
+    ? `AI 기능을 쓸 수 없어요. 서버의 API 키(ANTHROPIC_API_KEY) ${kind === 'missing' ? '설정이 없어요' : '가 올바르지 않아요'}. 관리자에게 알려 주세요.`
+    : kind === 'missing'
+      ? 'ANTHROPIC_API_KEY 가 설정되지 않았어요. .env.local 에 키를 넣고 개발 서버를 다시 시작해 주세요.'
+      : 'API 키가 올바르지 않아요. .env.local 의 ANTHROPIC_API_KEY 를 확인해 주세요.'
+
 const clampInt = (n: unknown, lo: number, hi: number) => Math.max(lo, Math.min(hi, Math.round(Number(n) || 0)))
 
 export async function runClaudeJudgment(input: JudgmentInput): Promise<ClaudeJudgmentResult> {
@@ -58,7 +66,7 @@ export async function runClaudeJudgment(input: JudgmentInput): Promise<ClaudeJud
   if (input.profitability.missing.length > 0) {
     return { judgment: { status: 'missing', missing: input.profitability.missing }, model: CLAUDE_MODEL, inputTokens: 0, outputTokens: 0 }
   }
-  if (!claudeConfigured()) throw new Error('ANTHROPIC_API_KEY 가 설정되지 않았어요. .env.local 에 키를 넣고 개발 서버를 다시 시작해 주세요.')
+  if (!claudeConfigured()) throw new Error(aiKeyMessage('missing'))
 
   const client = new Anthropic()
   try {
@@ -85,7 +93,7 @@ export async function runClaudeJudgment(input: JudgmentInput): Promise<ClaudeJud
     if (lines.length === 0) throw new Error('Claude 가 판단 줄을 돌려주지 않았어요. 다시 시도해 주세요.')
     return { judgment: { status: 'ok', lines }, model: res.model, inputTokens: res.usage.input_tokens, outputTokens: res.usage.output_tokens }
   } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) throw new Error('API 키가 올바르지 않아요. .env.local 의 ANTHROPIC_API_KEY 를 확인해 주세요.')
+    if (e instanceof Anthropic.AuthenticationError) throw new Error(aiKeyMessage('invalid'))
     if (e instanceof Anthropic.RateLimitError) throw new Error('요청이 너무 많아요. 잠시 뒤에 다시 시도해 주세요.')
     if (e instanceof Anthropic.APIError) throw new Error(`Claude API 오류 (${e.status}): ${e.message}`)
     throw e

@@ -124,6 +124,16 @@ try {
     assert.equal(crc32(Buffer.from('hello')), crc32(Buffer.from('hello'))); assert.equal(crc32(Buffer.from('123456789')), 0xcbf43926, 'CRC32 표준 시험값')
     assert.match(xlsxToText(fs.readFileSync('data/demo/exception/02_비용편익추계서_누락.xlsx')), /시트/)
   })
+  await t('AI 키 오류 안내: 배포본(production)에는 .env.local 안내가 나오지 않고, 로컬에는 나온다', async () => {
+    const { aiKeyMessage } = await import('@/lib/modules/w02/ai-claude')
+    const prev = process.env.NODE_ENV
+    try {
+      process.env.NODE_ENV = 'production'
+      for (const k of ['missing', 'invalid']) { assert.doesNotMatch(aiKeyMessage(k), /\.env\.local|개발 서버/); assert.match(aiKeyMessage(k), /관리자에게 알려/) }
+      process.env.NODE_ENV = 'development'
+      assert.match(aiKeyMessage('missing'), /\.env\.local/); assert.match(aiKeyMessage('invalid'), /\.env\.local/)
+    } finally { process.env.NODE_ENV = prev }
+  })
   console.log(`\n${n}개 시험 모두 통과`)
   process.exit(0)
 } catch (e) {
